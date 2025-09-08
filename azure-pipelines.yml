@@ -1,0 +1,236 @@
+# Azure Pipelines: VM provision, clone, build, and install (on-demand)
+
+name: vm-provision-build-install-$(Date:yyyyMMdd)$(Rev:rr)
+
+trigger: none
+pr: none
+
+variables:
+  # REQUIRED: Set this to your Azure RM service connection name in Azure DevOps
+  azureServiceConnection: "sc-himmelblau-testing"
+
+  # Defaults you can tweak
+  location: "southcentralus"
+  vmSize: "Standard_B2s"
+  adminUsername: "jnm"
+  # Use Build.BuildId to ensure uniqueness per run
+  resourceGroupName: "rg-hb-ci-$(Build.BuildId)"
+  vmName: "hb-ci-$(Build.BuildId)"
+  # Ubuntu 24.04 LTS Gen2 URN (Canonical Noble)
+  vmImageUrn: "Canonical:0001-com-ubuntu-server-noble:24_04-lts-gen2:latest"
+  # Repository to clone on the VM (defaults to the pipeline's repository)
+  repoUrl: "$(Build.Repository.Uri)"
+  # Branch to clone on the VM (defaults to the pipeline source branch name)
+  repoBranch: "$(Build.SourceBranchName)"
+  # Toggle build/install step on the VM (default off for infra-only validation)
+  enableBuildInstall: "false"
+  # Toggle Entra configuration step (default off for infra-only validation)
+  enableEntraSetup: "false"
+  # Entra ID configuration (used to seed /etc/himmelblau/himmelblau.conf on the VM)
+  # Example: contoso.com
+  entraPrimaryDomain: "melton.cloud"
+  # Optional: defaults to login.microsoftonline.com
+  entraAuthorityHost: "login.microsoftonline.com"
+  # Optional: comma-separated list of allowed group Object IDs (or UPNs) for PAM account checks
+  aadPamAllowGroups: ""
+
+stages:
+  - stage: vm_build_install
+    displayName: VM Provision + Build + Install + Teardown
+    jobs:
+      - job: provision_build_install
+        displayName: Provision VM, build from source, and always teardown
+        pool:
+          vmImage: "ubuntu-latest"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Create Resource Group + VM (no public IP)"
+            inputs:
+              azureSubscription: "$(azureServiceConnection)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                echo "Creating resource group: $(resourceGroupName) in $(location)"
+                az group create \
+                  --name "$(resourceGroupName)" \
+                  --location "$(location)"
+
+                echo "Creating VM: $(vmName) (Ubuntu 24.04, size $(vmSize))"
+                # --public-ip-address '' ensures no public IP is created.
+                az vm create \
+                  --resource-group "$(resourceGroupName)" \
+                  --name "$(vmName)" \
+                  --image "$(vmImageUrn)" \
+                  --size "$(vmSize)" \
+                  --admin-username "$(adminUsername)" \
+                  --public-ip-address '' \
+                  --generate-ssh-keys \
+                  --tags pipeline="$(Build.DefinitionName)" runId="$(Build.BuildId)" expiresAt="$(Build.QueuedTime)"
+
+                echo "Running simple sanity command via Run Command"
+                az vm run-command invoke \
+                  --resource-group "$(resourceGroupName)" \
+                  --name "$(vmName)" \
+                  --command-id RunShellScript \
+                  --scripts "echo VM OK && uname -a"
+
+          - task: AzureCLI@2
+            displayName: "Build from source on VM (clone + make + install)"
+            condition: and(succeeded(), eq(variables['enableBuildInstall'], 'true'))
+            inputs:
+              azureSubscription: "$(azureServiceConnection)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                REPO_URL='$(repoUrl)'
+                REPO_BRANCH='$(repoBranch)'
+                cat > build_install.sh <<SCRIPT
+                #!/usr/bin/env bash
+                set -euo pipefail
+                export DEBIAN_FRONTEND=noninteractive
+
+                echo "[vm] Updating apt and installing build prerequisites"
+                sudo apt-get update
+                sudo apt-get install -y \
+                  build-essential \
+                  git \
+                  curl \
+                  pkg-config \
+                  libssl-dev \
+                  libkrb5-dev \
+                  libpam0g-dev \
+                  libcap-dev \
+                  libudev-dev \
+                  libclang-dev \
+                  autoconf \
+                  gettext \
+                  libdbus-1-dev \
+                  libunistring-dev \
+                  libgirepository1.0-dev \
+                  libcairo2-dev \
+                  libgdk-pixbuf2.0-dev \
+                  libsoup-3.0-dev \
+                  libpango1.0-dev \
+                  libatk1.0-dev \
+                  libgtk-3-dev \
+                  libwebkit2gtk-4.1-dev \
+                  tpm-udev \
+                  libtss2-dev || true
+
+                echo "[vm] Installing Rust toolchain via rustup"
+                if ! command -v rustup >/dev/null 2>&1; then
+                  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+                fi
+                source "$HOME/.cargo/env"
+
+                echo "[vm] Cloning repository: $REPO_URL (branch: $REPO_BRANCH)"
+                mkdir -p /opt/src
+                cd /opt/src
+                if [ -d himmelblau-src ]; then sudo rm -rf himmelblau-src; fi
+                git clone --depth 1 --branch "$REPO_BRANCH" --single-branch "$REPO_URL" himmelblau-src
+                cd himmelblau-src
+
+                echo "[vm] Building (make)"
+                make
+
+                echo "[vm] Installing (sudo make install)"
+                sudo make install
+
+                echo "[vm] Build and install completed"
+                SCRIPT
+
+                echo "Invoking build/install script on VM"
+                az vm run-command invoke \
+                  --resource-group "$(resourceGroupName)" \
+                  --name "$(vmName)" \
+                  --command-id RunShellScript \
+                  --scripts @build_install.sh
+
+          - task: AzureCLI@2
+            displayName: "Configure Himmelblau + Entra ID on VM"
+            condition: and(succeeded(), eq(variables['enableEntraSetup'], 'true'))
+            inputs:
+              azureSubscription: "$(azureServiceConnection)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                PRIMARY_DOMAIN='$(entraPrimaryDomain)'
+                AUTHORITY_HOST='$(entraAuthorityHost)'
+                AAD_PAM_ALLOW_GROUPS='$(aadPamAllowGroups)'
+
+                if [ -z "$PRIMARY_DOMAIN" ]; then
+                  echo "entraPrimaryDomain is empty; skipping Entra config seeding."
+                fi
+
+                cat > entra_configure.sh <<'SCRIPT'
+                #!/usr/bin/env bash
+                set -euo pipefail
+                export DEBIAN_FRONTEND=noninteractive
+
+                PRIMARY_DOMAIN="$PRIMARY_DOMAIN"
+                AUTHORITY_HOST="$AUTHORITY_HOST"
+                AAD_PAM_ALLOW_GROUPS="$AAD_PAM_ALLOW_GROUPS"
+
+                echo "[vm] Seeding /etc/himmelblau/himmelblau.conf"
+                sudo install -d -m 0755 -o root -g root /etc/himmelblau
+                tmpcfg=$(mktemp)
+                {
+                  echo "[global]"
+                  if [ -n "$PRIMARY_DOMAIN" ]; then
+                    echo "domains = $PRIMARY_DOMAIN"
+                  fi
+                  echo "authority_host = $AUTHORITY_HOST"
+                  # Headless CI host: disable Hello/PIN/GDM features
+                  echo "enable_hello = false"
+                } > "$tmpcfg"
+
+                if [ -n "$AAD_PAM_ALLOW_GROUPS" ]; then
+                  echo "pam_allow_groups = $AAD_PAM_ALLOW_GROUPS" >> "$tmpcfg"
+                fi
+
+                sudo mv "$tmpcfg" /etc/himmelblau/himmelblau.conf
+                sudo chmod 0644 /etc/himmelblau/himmelblau.conf
+
+                echo "[vm] Enable and start Himmelblau services"
+                sudo systemctl daemon-reload || true
+                sudo systemctl enable --now himmelblaud.service himmelblaud-tasks.service || true
+
+                echo "[vm] Configure PAM to include pam_himmelblau (non-dry-run)"
+                if command -v aad-tool >/dev/null 2>&1; then
+                  sudo aad-tool configure-pam --really || true
+                else
+                  echo "aad-tool not found; skipping PAM configuration"
+                fi
+
+                echo "[vm] Validate basic daemon health"
+                if command -v aad-tool >/dev/null 2>&1; then
+                  aad-tool version || true
+                  aad-tool status || true
+                fi
+                SCRIPT
+
+                echo "Invoking Entra configuration script on VM"
+                az vm run-command invoke \
+                  --resource-group "$(resourceGroupName)" \
+                  --name "$(vmName)" \
+                  --command-id RunShellScript \
+                  --scripts @entra_configure.sh
+
+          - task: AzureCLI@2
+            displayName: "Teardown: delete resource group (always)"
+            condition: always()
+            inputs:
+              azureSubscription: "$(azureServiceConnection)"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                if az group show --name "$(resourceGroupName)" >/dev/null 2>&1; then
+                  echo "Deleting resource group: $(resourceGroupName)"
+                  az group delete --name "$(resourceGroupName)" --yes
+                else
+                  echo "Resource group $(resourceGroupName) not found; nothing to delete."
+                fi
