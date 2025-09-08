@@ -21,3 +21,4 @@ packaging/
 
 # VM image for nixos testing
 *.qcow2
+.azure

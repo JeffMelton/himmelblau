@@ -15,6 +15,10 @@ Intune MDM policies.
 
 [![Azure Entra Id Authentication for Linux](img/sambaxp.png)](https://youtu.be/wCibnqVQ_bs "Azure Entra Id Authentication for Linux")
 
+## Azure DevOps CI
+
+An on‑demand Azure Pipelines workflow for VM provisioning/teardown is available. See docs/azure-devops-ci.md for setup and usage.
+
 ## Sponsorship
 
 [![SUSE](https://www.suse.com/siteassets/layout/suse-white-logo-green.svg)](https://www.suse.com)
