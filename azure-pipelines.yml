@@ -16,8 +16,8 @@ variables:
   # Use Build.BuildId to ensure uniqueness per run
   resourceGroupName: "rg-hb-ci-$(Build.BuildId)"
   vmName: "hb-ci-$(Build.BuildId)"
-  # Ubuntu 24.04 LTS Gen2 URN (Canonical Noble)
-  vmImageUrn: "Canonical:0001-com-ubuntu-server-noble:24_04-lts-gen2:latest"
+  # Ubuntu 24.04 LTS image alias (portable and region-friendly)
+  vmImageUrn: "Ubuntu2404"
   # Repository to clone on the VM (defaults to the pipeline's repository)
   repoUrl: "$(Build.Repository.Uri)"
   # Branch to clone on the VM (defaults to the pipeline source branch name)
@@ -66,7 +66,7 @@ stages:
                   --admin-username "$(adminUsername)" \
                   --public-ip-address '' \
                   --generate-ssh-keys \
-                  --tags pipeline="$(Build.DefinitionName)" runId="$(Build.BuildId)" expiresAt="$(Build.QueuedTime)"
+                  --tags pipeline="$(Build.DefinitionName)" runId="$(Build.BuildId)"
 
                 echo "Running simple sanity command via Run Command"
                 az vm run-command invoke \
