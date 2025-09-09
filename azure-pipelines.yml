@@ -7,12 +7,12 @@ pr: none
 
 variables:
   # REQUIRED: Set this to your Azure RM service connection name in Azure DevOps
-  azureServiceConnection: "sc-himmelblau-testing"
+  azureServiceConnection: "sc-himmelblau-testing-arm"
 
   # Defaults you can tweak
   location: "southcentralus"
   vmSize: "Standard_B2s"
-  adminUsername: "jnm"
+  adminUsername: "azureuser"
   # Use Build.BuildId to ensure uniqueness per run
   resourceGroupName: "rg-hb-ci-$(Build.BuildId)"
   vmName: "hb-ci-$(Build.BuildId)"
