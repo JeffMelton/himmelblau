@@ -8,25 +8,25 @@ pr: none
 parameters:
   - name: enableBuildInstall
     type: boolean
-    default: false
+    default: "false"
   - name: enableEntraSetup
     type: boolean
-    default: false
+    default: "false"
   - name: repoBranch
     type: string
     default: ""
 
 variables:
-  azureServiceConnection: 'sc-himmelblau-testing-arm'
-  location: 'southcentralus'
-  vmSize: 'Standard_B2s'
-  adminUsername: 'azureuser'
-  resourceGroupName: 'rg-hb-ci-$(Build.BuildId)'
-  vmName: 'hb-ci-$(Build.BuildId)'
-  vmImageUrn: 'Ubuntu2404'
-  repoUrl: 'https://github.com/JeffMelton/himmelblau.git'
-  entraPrimaryDomain: 'melton.cloud'
-  entraAuthorityHost: 'login.microsoftonline.com'
+  azureServiceConnection: "sc-himmelblau-testing-arm"
+  location: "southcentralus"
+  vmSize: "Standard_B2s"
+  adminUsername: "azureuser"
+  resourceGroupName: "rg-hb-ci-$(Build.BuildId)"
+  vmName: "hb-ci-$(Build.BuildId)"
+  vmImageUrn: "Ubuntu2404"
+  repoUrl: "https://github.com/JeffMelton/himmelblau.git"
+  entraPrimaryDomain: "melton.cloud"
+  entraAuthorityHost: "login.microsoftonline.com"
   aadPamAllowGroups: ""
 
 stages:
