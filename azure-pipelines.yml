@@ -5,34 +5,45 @@ name: vm-provision-build-install-$(Date:yyyyMMdd)$(Rev:rr)
 trigger: none
 pr: none
 
-variables:
-  # REQUIRED: Set this to your Azure RM service connection name in Azure DevOps
-  azureServiceConnection: "sc-himmelblau-testing-arm"
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: sc-himmelblau-testing-arm
+  - name: location
+    type: string
+    default: southcentralus
+  - name: vmSize
+    type: string
+    default: Standard_B2s
+  - name: adminUsername
+    type: string
+    default: azureuser
+  - name: enableBuildInstall
+    type: boolean
+    default: false
+  - name: enableEntraSetup
+    type: boolean
+    default: false
+  - name: repoUrl
+    type: string
+    default: ${{ variables['Build.Repository.Uri'] }}
+  - name: repoBranch
+    type: string
+    default: ${{ variables['Build.SourceBranchName'] }}
+  - name: entraPrimaryDomain
+    type: string
+    default: melton.cloud
+  - name: entraAuthorityHost
+    type: string
+    default: login.microsoftonline.com
+  - name: aadPamAllowGroups
+    type: string
+    default: ""
 
-  # Defaults you can tweak
-  location: "southcentralus"
-  vmSize: "Standard_B2s"
-  adminUsername: "azureuser"
-  # Use Build.BuildId to ensure uniqueness per run
-  resourceGroupName: "rg-hb-ci-$(Build.BuildId)"
-  vmName: "hb-ci-$(Build.BuildId)"
-  # Ubuntu 24.04 LTS image alias (portable and region-friendly)
-  vmImageUrn: "Ubuntu2404"
-  # Repository to clone on the VM (defaults to the pipeline's repository)
-  repoUrl: "$(Build.Repository.Uri)"
-  # Branch to clone on the VM (defaults to the pipeline source branch name)
-  repoBranch: "$(Build.SourceBranchName)"
-  # Toggle build/install step on the VM (default off for infra-only validation)
-  enableBuildInstall: "false"
-  # Toggle Entra configuration step (default off for infra-only validation)
-  enableEntraSetup: "false"
-  # Entra ID configuration (used to seed /etc/himmelblau/himmelblau.conf on the VM)
-  # Example: contoso.com
-  entraPrimaryDomain: "melton.cloud"
-  # Optional: defaults to login.microsoftonline.com
-  entraAuthorityHost: "login.microsoftonline.com"
-  # Optional: comma-separated list of allowed group Object IDs (or UPNs) for PAM account checks
-  aadPamAllowGroups: ""
+variables:
+  resourceGroupName: 'rg-hb-ci-$(Build.BuildId)'
+  vmName: 'hb-ci-$(Build.BuildId)'
+  vmImageUrn: 'Ubuntu2404'
 
 stages:
   - stage: vm_build_install
@@ -46,24 +57,23 @@ stages:
           - task: AzureCLI@2
             displayName: "Create Resource Group + VM (no public IP)"
             inputs:
-              azureSubscription: "$(azureServiceConnection)"
+              azureSubscription: ${{ parameters.azureServiceConnection }}
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
                 set -euo pipefail
-                echo "Creating resource group: $(resourceGroupName) in $(location)"
+                echo "Creating resource group: $(resourceGroupName) in ${{ parameters.location }}"
                 az group create \
                   --name "$(resourceGroupName)" \
-                  --location "$(location)"
+                  --location "${{ parameters.location }}"
 
-                echo "Creating VM: $(vmName) (Ubuntu 24.04, size $(vmSize))"
-                # --public-ip-address '' ensures no public IP is created.
+                echo "Creating VM: $(vmName) (Ubuntu 24.04, size ${{ parameters.vmSize }})"
                 az vm create \
                   --resource-group "$(resourceGroupName)" \
                   --name "$(vmName)" \
                   --image "$(vmImageUrn)" \
-                  --size "$(vmSize)" \
-                  --admin-username "$(adminUsername)" \
+                  --size "${{ parameters.vmSize }}" \
+                  --admin-username "${{ parameters.adminUsername }}" \
                   --public-ip-address '' \
                   --generate-ssh-keys \
                   --tags pipeline="$(Build.DefinitionName)" runId="$(Build.BuildId)"
@@ -77,15 +87,15 @@ stages:
 
           - task: AzureCLI@2
             displayName: "Build from source on VM (clone + make + install)"
-            condition: and(succeeded(), eq(variables['enableBuildInstall'], 'true'))
+            condition: and(succeeded(), eq(${{ parameters.enableBuildInstall }}, true))
             inputs:
-              azureSubscription: "$(azureServiceConnection)"
+              azureSubscription: ${{ parameters.azureServiceConnection }}
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
                 set -euo pipefail
-                REPO_URL='$(repoUrl)'
-                REPO_BRANCH='$(repoBranch)'
+                REPO_URL='${{ parameters.repoUrl }}'
+                REPO_BRANCH='${{ parameters.repoBranch }}'
                 cat > build_install.sh <<SCRIPT
                 #!/usr/bin/env bash
                 set -euo pipefail
@@ -150,16 +160,16 @@ stages:
 
           - task: AzureCLI@2
             displayName: "Configure Himmelblau + Entra ID on VM"
-            condition: and(succeeded(), eq(variables['enableEntraSetup'], 'true'))
+            condition: and(succeeded(), eq(${{ parameters.enableEntraSetup }}, true))
             inputs:
-              azureSubscription: "$(azureServiceConnection)"
+              azureSubscription: ${{ parameters.azureServiceConnection }}
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
                 set -euo pipefail
-                PRIMARY_DOMAIN='$(entraPrimaryDomain)'
-                AUTHORITY_HOST='$(entraAuthorityHost)'
-                AAD_PAM_ALLOW_GROUPS='$(aadPamAllowGroups)'
+                PRIMARY_DOMAIN='${{ parameters.entraPrimaryDomain }}'
+                AUTHORITY_HOST='${{ parameters.entraAuthorityHost }}'
+                AAD_PAM_ALLOW_GROUPS='${{ parameters.aadPamAllowGroups }}'
 
                 if [ -z "$PRIMARY_DOMAIN" ]; then
                   echo "entraPrimaryDomain is empty; skipping Entra config seeding."
@@ -183,7 +193,6 @@ stages:
                     echo "domains = $PRIMARY_DOMAIN"
                   fi
                   echo "authority_host = $AUTHORITY_HOST"
-                  # Headless CI host: disable Hello/PIN/GDM features
                   echo "enable_hello = false"
                 } > "$tmpcfg"
 
@@ -223,7 +232,7 @@ stages:
             displayName: "Teardown: delete resource group (always)"
             condition: always()
             inputs:
-              azureSubscription: "$(azureServiceConnection)"
+              azureSubscription: ${{ parameters.azureServiceConnection }}
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
