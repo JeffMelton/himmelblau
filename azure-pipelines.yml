@@ -6,44 +6,28 @@ trigger: none
 pr: none
 
 parameters:
-  - name: azureServiceConnection
-    type: string
-    default: sc-himmelblau-testing-arm
-  - name: location
-    type: string
-    default: southcentralus
-  - name: vmSize
-    type: string
-    default: Standard_B2s
-  - name: adminUsername
-    type: string
-    default: azureuser
   - name: enableBuildInstall
     type: boolean
     default: false
   - name: enableEntraSetup
     type: boolean
     default: false
-  - name: repoUrl
-    type: string
-    default: ${{ variables['Build.Repository.Uri'] }}
   - name: repoBranch
-    type: string
-    default: ${{ variables['Build.SourceBranchName'] }}
-  - name: entraPrimaryDomain
-    type: string
-    default: melton.cloud
-  - name: entraAuthorityHost
-    type: string
-    default: login.microsoftonline.com
-  - name: aadPamAllowGroups
     type: string
     default: ""
 
 variables:
+  azureServiceConnection: 'sc-himmelblau-testing-arm'
+  location: 'southcentralus'
+  vmSize: 'Standard_B2s'
+  adminUsername: 'azureuser'
   resourceGroupName: 'rg-hb-ci-$(Build.BuildId)'
   vmName: 'hb-ci-$(Build.BuildId)'
   vmImageUrn: 'Ubuntu2404'
+  repoUrl: 'https://github.com/JeffMelton/himmelblau.git'
+  entraPrimaryDomain: 'melton.cloud'
+  entraAuthorityHost: 'login.microsoftonline.com'
+  aadPamAllowGroups: ""
 
 stages:
   - stage: vm_build_install
@@ -57,23 +41,23 @@ stages:
           - task: AzureCLI@2
             displayName: "Create Resource Group + VM (no public IP)"
             inputs:
-              azureSubscription: ${{ parameters.azureServiceConnection }}
+              azureSubscription: $(azureServiceConnection)
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
                 set -euo pipefail
-                echo "Creating resource group: $(resourceGroupName) in ${{ parameters.location }}"
+                echo "Creating resource group: $(resourceGroupName) in $(location)"
                 az group create \
                   --name "$(resourceGroupName)" \
-                  --location "${{ parameters.location }}"
+                  --location "$(location)"
 
-                echo "Creating VM: $(vmName) (Ubuntu 24.04, size ${{ parameters.vmSize }})"
+                echo "Creating VM: $(vmName) (Ubuntu 24.04, size $(vmSize))"
                 az vm create \
                   --resource-group "$(resourceGroupName)" \
                   --name "$(vmName)" \
                   --image "$(vmImageUrn)" \
-                  --size "${{ parameters.vmSize }}" \
-                  --admin-username "${{ parameters.adminUsername }}" \
+                  --size "$(vmSize)" \
+                  --admin-username "$(adminUsername)" \
                   --public-ip-address '' \
                   --generate-ssh-keys \
                   --tags pipeline="$(Build.DefinitionName)" runId="$(Build.BuildId)"
@@ -89,13 +73,14 @@ stages:
             displayName: "Build from source on VM (clone + make + install)"
             condition: and(succeeded(), eq(${{ parameters.enableBuildInstall }}, true))
             inputs:
-              azureSubscription: ${{ parameters.azureServiceConnection }}
+              azureSubscription: $(azureServiceConnection)
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
                 set -euo pipefail
-                REPO_URL='${{ parameters.repoUrl }}'
+                REPO_URL='$(repoUrl)'
                 REPO_BRANCH='${{ parameters.repoBranch }}'
+                if [ -z "$REPO_BRANCH" ]; then REPO_BRANCH="$(Build.SourceBranchName)"; fi
                 cat > build_install.sh <<SCRIPT
                 #!/usr/bin/env bash
                 set -euo pipefail
@@ -162,14 +147,14 @@ stages:
             displayName: "Configure Himmelblau + Entra ID on VM"
             condition: and(succeeded(), eq(${{ parameters.enableEntraSetup }}, true))
             inputs:
-              azureSubscription: ${{ parameters.azureServiceConnection }}
+              azureSubscription: $(azureServiceConnection)
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
                 set -euo pipefail
-                PRIMARY_DOMAIN='${{ parameters.entraPrimaryDomain }}'
-                AUTHORITY_HOST='${{ parameters.entraAuthorityHost }}'
-                AAD_PAM_ALLOW_GROUPS='${{ parameters.aadPamAllowGroups }}'
+                PRIMARY_DOMAIN='$(entraPrimaryDomain)'
+                AUTHORITY_HOST='$(entraAuthorityHost)'
+                AAD_PAM_ALLOW_GROUPS='$(aadPamAllowGroups)'
 
                 if [ -z "$PRIMARY_DOMAIN" ]; then
                   echo "entraPrimaryDomain is empty; skipping Entra config seeding."
@@ -232,7 +217,7 @@ stages:
             displayName: "Teardown: delete resource group (always)"
             condition: always()
             inputs:
-              azureSubscription: ${{ parameters.azureServiceConnection }}
+              azureSubscription: $(azureServiceConnection)
               scriptType: bash
               scriptLocation: inlineScript
               inlineScript: |
