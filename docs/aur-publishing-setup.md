@@ -231,12 +231,28 @@ This mirrors what a real `makepkg` run on an Arch user's machine would do:
 downloads the release tarball, runs `cargo fetch`, compiles the whole workspace,
 and produces a `.pkg.tar.zst` in `packaging/aur/`.
 
+> [!WARNING]
+> The generated PKGBUILD's `source=` URL always points to the **canonical
+> upstream** (`himmelblau-idm/himmelblau`).  This means `makepkg` will try to
+> download a tarball from that repository, and the build will fail with a
+> **404** if the version in `Cargo.toml` has not yet been published there as a
+> tagged release.  If you are working on an unreleased version, use
+> **[step 7d](#7d-using-podman--testing-a-pre-release--fork-build)** instead.
+
 > [!IMPORTANT]
 > The container needs outbound internet access (to download the source tarball
 > and Rust crates).  The build takes 20–40 minutes on typical hardware.
 > `makepkg` deliberately refuses to run as `root` (a security design choice that
 > prevents build scripts from silently modifying your system), so the script
 > creates a `builder` user inside the container.
+
+First, generate the PKGBUILD against the already-published release:
+
+```bash
+python3 scripts/gen_pkgbuild.py --fetch-sha256
+```
+
+Then run the container build:
 
 ```bash
 podman run --rm \
@@ -278,6 +294,72 @@ podman run --rm \
 
 ---
 
+### 7d. Using `podman` — testing a pre-release / fork build
+
+Use this path when the version in `Cargo.toml` has **not yet been published**
+at `himmelblau-idm/himmelblau`.  The trick is to push a matching tag to your
+own fork and then point both the SHA-256 fetch *and* the PKGBUILD `source=` URL
+at your fork.
+
+**Step 1 — push the version tag to your fork:**
+
+```bash
+FORK_USER="YourGitHubUsername"
+# Read the version straight from Cargo.toml (workspace.package.version)
+VERSION="$(grep -m1 '^version\s*=' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+
+git tag "$VERSION"
+git push "https://github.com/${FORK_USER}/himmelblau" "$VERSION"
+```
+
+**Step 2 — generate the PKGBUILD, then patch its `source=` URL to your fork:**
+
+> [!NOTE]
+> `--upstream-repo` controls only where the SHA-256 is fetched from, not the
+> `source=` URL that `makepkg` uses at build time.  The `sed` command below
+> patches the `source=` line so that the container downloads the tarball from
+> your fork rather than the canonical upstream.
+
+```bash
+FORK_USER="YourGitHubUsername"
+FORK_URL="https://github.com/${FORK_USER}/himmelblau"
+
+python3 scripts/gen_pkgbuild.py --fetch-sha256 --upstream-repo "$FORK_URL"
+
+# Redirect the source download to your fork.
+# This patches the canonical upstream path in the source= line, which always
+# takes the form "<owner>/himmelblau/archive/…" as produced by gen_pkgbuild.py.
+sed -i "s|himmelblau-idm/himmelblau/archive|${FORK_USER}/himmelblau/archive|" \
+    packaging/aur/PKGBUILD
+```
+
+**Step 3 — run the podman build** (identical to step 7c above):
+
+```bash
+podman run --rm \
+  -v "$(pwd)/packaging/aur:/pkgbuild:z" \
+  archlinux:latest \
+  bash -c "
+    pacman -Syu --noconfirm &&
+    pacman -S --noconfirm --needed \
+        base-devel cargo cmake clang pkgconf python \
+        krb5 libcap pam sqlite systemd tpm2-tss &&
+    useradd -m builder &&
+    chown -R builder /pkgbuild &&
+    su - builder -c 'cd /pkgbuild && makepkg --noconfirm'
+  "
+```
+
+> [!TIP]
+> Remember to delete the pre-release tag from your fork when you are done so it
+> does not mislead users:
+> ```bash
+> git push "https://github.com/${FORK_USER}/himmelblau" --delete "$VERSION"
+> git tag -d "$VERSION"
+> ```
+
+---
+
 ## Quick-reference checklist
 
 - [ ] AUR account created (or existing account confirmed)
@@ -287,4 +369,5 @@ podman run --rm \
 - [ ] Initial PKGBUILD pushed to AUR manually (step 5 above)
 - [ ] Workflow validated with a test tag (step 6 above)
 - [ ] (Optional) PKGBUILD metadata validated with `podman` (step 7b above)
-- [ ] (Optional) Full build tested with `podman` (step 7c above)
+- [ ] (Optional) Full build tested with `podman` — published release (step 7c above)
+- [ ] (Optional) Full build tested with `podman` — pre-release / fork (step 7d above)
