@@ -15,6 +15,15 @@ Usage:
   # Use the version already in Cargo.toml (and fetch checksum):
   python3 scripts/gen_pkgbuild.py --fetch-sha256
 
+  # During pre-release / fork validation, override the repo used for the
+  # tarball fetch (the PKGBUILD source= URL still points to the upstream
+  # defined in Cargo.toml, but the SHA-256 can be seeded from your fork):
+  python3 scripts/gen_pkgbuild.py --fetch-sha256 \\
+      --upstream-repo https://github.com/MyFork/himmelblau
+
+  # Skip checksum verification while a release is still being prepared:
+  python3 scripts/gen_pkgbuild.py --sha256 SKIP
+
   # Override output directory (default: ./packaging/aur/):
   python3 scripts/gen_pkgbuild.py --version 4.1.0 --sha256 <hex> --out ./out/
 """
@@ -22,6 +31,7 @@ Usage:
 import argparse
 import hashlib
 import os
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -102,9 +112,11 @@ def load_workspace_metadata(repo_root: Path) -> dict:
     }
 
 
-def fetch_sha256(url: str) -> str:
-    """Download *url* and return its SHA-256 hex digest."""
-    print(f"Fetching {url} …")
+def _download_sha256(url: str) -> str:
+    """Download *url* and return its SHA-256 hex digest.
+
+    Raises ``urllib.error.HTTPError`` on a non-2xx response.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": "gen_pkgbuild/1.0"})
     h = hashlib.sha256()
     with urllib.request.urlopen(req, timeout=120) as resp:
@@ -116,8 +128,55 @@ def fetch_sha256(url: str) -> str:
     return h.hexdigest()
 
 
+def fetch_sha256(repo_url: str, version: str) -> str:
+    """Return the SHA-256 of the release tarball for *version* in *repo_url*.
+
+    GitHub tags may be bare (``4.0.0``) or ``v``-prefixed (``v4.0.0``).
+    Both variants are tried automatically.
+
+    Raises ``SystemExit`` with a helpful message if neither URL resolves.
+    """
+    base = repo_url.rstrip("/").removesuffix(".git")
+    candidates = [
+        f"{base}/archive/refs/tags/{version}.tar.gz",
+        f"{base}/archive/refs/tags/v{version}.tar.gz",
+    ]
+    for url in candidates:
+        try:
+            print(f"Fetching {url} …")
+            return _download_sha256(url)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                print(f"  → not found (404), trying next …")
+                continue
+            # Surface non-404 HTTP errors immediately with a clear message
+            raise SystemExit(
+                f"\nError: HTTP {exc.code} fetching {url}\n"
+                f"  {exc.reason}\n"
+                "Check your network connection and repository permissions."
+            ) from exc
+
+    # Both candidates returned 404
+    tried = "\n  ".join(candidates)
+    raise SystemExit(
+        f"\nError: no release tarball found for version {version!r}.\n"
+        f"Tried:\n  {tried}\n\n"
+        "The release may not be published yet on that repository.\n"
+        "Options:\n"
+        "  • Use --sha256 SKIP while the release is still being prepared.\n"
+        "  • Use --upstream-repo <url> to fetch from a different repository\n"
+        "    (e.g. your fork) for pre-release / validation purposes.\n"
+        "  • Use --sha256 <hex> to supply a pre-computed checksum."
+    )
+
+
 def tarball_url(repo_url: str, version: str) -> str:
-    """Return the GitHub archive tarball URL for *version*."""
+    """Return the GitHub archive tarball URL for *version*.
+
+    Uses the bare version tag (no ``v`` prefix) because that is the convention
+    used by this project.  The ``v``-prefix fallback is only used when
+    *fetching* the tarball to compute a checksum.
+    """
     # Normalise: strip trailing slash / .git
     base = repo_url.rstrip("/").removesuffix(".git")
     return f"{base}/archive/refs/tags/{version}.tar.gz"
@@ -335,6 +394,17 @@ def main() -> None:
         help="Fetch the release tarball and compute its SHA-256 automatically",
     )
     ap.add_argument(
+        "--upstream-repo",
+        default=None,
+        metavar="URL",
+        help=(
+            "Override the repository URL used to fetch the release tarball "
+            "when --fetch-sha256 is set (default: repository field from "
+            "Cargo.toml).  Useful during pre-release or fork validation, e.g. "
+            "--upstream-repo https://github.com/MyFork/himmelblau"
+        ),
+    )
+    ap.add_argument(
         "--out",
         default="./packaging/aur",
         help="Output directory (default: ./packaging/aur)",
@@ -363,11 +433,16 @@ def main() -> None:
     src_url  = tarball_url(repo_url, version)
     src_name = f"himmelblau-{version}.tar.gz"
 
+    # The repo used to *fetch* the tarball for SHA-256 calculation.
+    # This defaults to the canonical upstream URL from Cargo.toml but can be
+    # overridden (e.g. to a fork) for pre-release / validation purposes.
+    fetch_repo_url = args.upstream_repo or repo_url
+
     # Resolve SHA-256
     if args.sha256:
         sha256 = args.sha256
     elif args.fetch_sha256:
-        sha256 = fetch_sha256(src_url)
+        sha256 = fetch_sha256(fetch_repo_url, version)
     else:
         sha256 = "SKIP"
 

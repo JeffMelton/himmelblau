@@ -88,12 +88,30 @@ the git remote must already contain a valid initial commit.
 
 The `packaging/` directory is excluded from git (it holds build artifacts).
 `gen_pkgbuild.py` generates both files fresh each time — the workflow does this
-automatically on every release, and you can do the same locally for the first push:
+automatically on every release, and you can do the same locally for the first push.
+
+**If the version in `Cargo.toml` corresponds to a published release** (i.e. a
+matching git tag exists upstream at `https://github.com/himmelblau-idm/himmelblau`):
 
 ```bash
 # From the root of this repository:
 python3 scripts/gen_pkgbuild.py --fetch-sha256
 # Output written to packaging/aur/PKGBUILD and packaging/aur/.SRCINFO
+```
+
+**If the version is still in development** (no upstream tag yet), use
+`--sha256 SKIP` to generate a placeholder PKGBUILD for the initial push, then
+update it with the real checksum once the release is tagged:
+
+```bash
+python3 scripts/gen_pkgbuild.py --sha256 SKIP
+```
+
+You can also target your fork directly during pre-release validation:
+
+```bash
+python3 scripts/gen_pkgbuild.py --fetch-sha256 \
+    --upstream-repo https://github.com/YourFork/himmelblau
 ```
 
 ### 5b. Clone the (empty) AUR repository
