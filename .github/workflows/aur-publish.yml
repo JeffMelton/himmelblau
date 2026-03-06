@@ -30,14 +30,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      # Derive the plain semver string (strip a leading 'v' if present)
-      - name: Extract version from tag
-        id: version
+      # Query the upstream project for its latest published release.
+      # This decouples the AUR package version from whatever tag triggered
+      # this workflow, so test/pre-release tags never cause a 404 failure.
+      - name: Fetch latest upstream release
+        id: release
         run: |
-          TAG="${{ github.ref_name }}"
+          # Upstream URL is the canonical source — read from Cargo.toml so
+          # it stays in sync automatically when the repository field changes.
+          UPSTREAM=$(grep '^repository' Cargo.toml | head -1 \
+            | sed 's/.*= *"\(.*\)"/\1/' | sed 's|/*$||' | sed 's|\.git$||')
+          UPSTREAM_SLUG=$(echo "${UPSTREAM}" | sed 's|https://github.com/||')
+
+          RESPONSE=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${UPSTREAM_SLUG}/releases/latest")
+
+          TAG=$(echo "${RESPONSE}" | jq -r '.tag_name')
           VERSION="${TAG#v}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}"  >> "$GITHUB_OUTPUT"
+          echo "upstream=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+          echo "Latest upstream release: ${TAG} → version ${VERSION}"
 
       # Compute SHA-256 of the release tarball so PKGBUILD is reproducible.
       # The tarball URL must match the source= line in the generated PKGBUILD,
@@ -46,12 +59,8 @@ jobs:
       - name: Compute source tarball SHA-256
         id: sha256
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-
-          # Upstream URL is the canonical source — read from Cargo.toml so
-          # it stays in sync automatically when the repository field changes.
-          UPSTREAM=$(grep '^repository' Cargo.toml | head -1 \
-            | sed 's/.*= *"\(.*\)"/\1/' | sed 's|/*$||' | sed 's|\.git$||')
+          VERSION="${{ steps.release.outputs.version }}"
+          UPSTREAM="${{ steps.release.outputs.upstream }}"
 
           # GitHub tags may be bare (4.0.0) or v-prefixed (v4.0.0).
           # Download once per candidate into a temp file; compute hash from it.
@@ -82,7 +91,7 @@ jobs:
       - name: Generate PKGBUILD and .SRCINFO
         run: |
           python3 scripts/gen_pkgbuild.py \
-            --version "${{ steps.version.outputs.version }}" \
+            --version "${{ steps.release.outputs.version }}" \
             --sha256  "${{ steps.sha256.outputs.sha256 }}"  \
             --out     packaging/aur/
 
@@ -138,6 +147,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to AUR package – skipping push."
           else
-            git commit -m "Update to ${{ steps.version.outputs.version }}"
+            git commit -m "Update to ${{ steps.release.outputs.version }}"
             git push origin HEAD:master
           fi
