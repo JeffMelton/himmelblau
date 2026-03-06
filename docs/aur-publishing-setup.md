@@ -86,11 +86,13 @@ the git remote must already contain a valid initial commit.
 
 ### 5a. Generate the initial PKGBUILD and .SRCINFO locally
 
+The `packaging/` directory is excluded from git (it holds build artifacts).
+`gen_pkgbuild.py` generates both files fresh each time — the workflow does this
+automatically on every release, and you can do the same locally for the first push:
+
 ```bash
 # From the root of this repository:
-python3 scripts/gen_pkgbuild.py \
-    --version "$(grep '^version' Cargo.toml | head -1 | sed 's/.*= "\(.*\)"/\1/')" \
-    --fetch-sha256
+python3 scripts/gen_pkgbuild.py --fetch-sha256
 # Output written to packaging/aur/PKGBUILD and packaging/aur/.SRCINFO
 ```
 
