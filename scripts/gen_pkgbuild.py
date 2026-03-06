@@ -6,6 +6,9 @@ Reads workspace Cargo.toml for version metadata, then writes a ready-to-push
 packaging/aur/PKGBUILD and packaging/aur/.SRCINFO.
 
 Usage:
+  # Use the latest published upstream release (recommended for local testing):
+  python3 scripts/gen_pkgbuild.py --use-latest-release
+
   # Update with explicit version and pre-computed checksum:
   python3 scripts/gen_pkgbuild.py --version 4.1.0 --sha256 <hex>
 
@@ -13,13 +16,9 @@ Usage:
   python3 scripts/gen_pkgbuild.py --version 4.1.0 --fetch-sha256
 
   # Use the version already in Cargo.toml (and fetch checksum):
+  #   NOTE: this fails if Cargo.toml contains an unreleased version.
+  #   Use --use-latest-release instead.
   python3 scripts/gen_pkgbuild.py --fetch-sha256
-
-  # During pre-release / fork validation, override the repo used for the
-  # tarball fetch (the PKGBUILD source= URL still points to the upstream
-  # defined in Cargo.toml, but the SHA-256 can be seeded from your fork):
-  python3 scripts/gen_pkgbuild.py --fetch-sha256 \\
-      --upstream-repo https://github.com/MyFork/himmelblau
 
   # Skip checksum verification while a release is still being prepared:
   python3 scripts/gen_pkgbuild.py --sha256 SKIP
@@ -30,6 +29,7 @@ Usage:
 
 import argparse
 import hashlib
+import json
 import os
 import urllib.error
 import urllib.request
@@ -168,6 +168,47 @@ def fetch_sha256(repo_url: str, version: str) -> str:
         "    (e.g. your fork) for pre-release / validation purposes.\n"
         "  • Use --sha256 <hex> to supply a pre-computed checksum."
     )
+
+
+def fetch_latest_release_version(repo_url: str) -> str:
+    """Return the version string of the latest published release in *repo_url*.
+
+    Queries the GitHub Releases API.  Strips a leading ``v`` prefix so the
+    returned value is always a bare semver string (e.g. ``3.0.1``).
+
+    Raises ``SystemExit`` with a helpful message on failure.
+    """
+    base = repo_url.rstrip("/").removesuffix(".git")
+    # Convert https://github.com/<owner>/<repo> → <owner>/<repo>
+    slug = base.removeprefix("https://github.com/")
+    api_url = f"https://api.github.com/repos/{slug}/releases/latest"
+    req = urllib.request.Request(
+        api_url,
+        headers={
+            "User-Agent": "gen_pkgbuild/1.0",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    try:
+        print(f"Querying latest release from {api_url} …")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(
+            f"\nError: HTTP {exc.code} fetching {api_url}\n"
+            f"  {exc.reason}\n"
+            "Check your network connection and repository permissions."
+        ) from exc
+
+    tag = data.get("tag_name", "")
+    if not tag:
+        raise SystemExit(
+            f"\nError: could not read tag_name from GitHub API response.\n"
+            f"Response: {data}\n"
+        )
+    version = tag.lstrip("v")
+    print(f"  → latest release tag: {tag!r}  (version {version!r})")
+    return version
 
 
 def tarball_url(repo_url: str, version: str) -> str:
@@ -374,6 +415,16 @@ def main() -> None:
         description="Generate AUR PKGBUILD and .SRCINFO for himmelblau"
     )
     ap.add_argument(
+        "--use-latest-release",
+        action="store_true",
+        help=(
+            "Query the GitHub Releases API for the latest published release "
+            "tag and use that version (ignoring Cargo.toml). "
+            "The SHA-256 is fetched automatically. "
+            "This is the recommended mode for local testing."
+        ),
+    )
+    ap.add_argument(
         "--version",
         default=None,
         help="Package version (default: read from Cargo.toml)",
@@ -424,10 +475,17 @@ def main() -> None:
 
     # Load metadata
     meta = load_workspace_metadata(repo_root)
-    version  = args.version or meta["version"]
     homepage = meta["homepage"]
     repo_url = meta["repository"]
     license_id = meta["license"]
+
+    # Resolve version.
+    # --use-latest-release queries the GitHub API for the latest published tag
+    # so local testing always builds a version that actually exists upstream.
+    if args.use_latest_release:
+        version = fetch_latest_release_version(repo_url)
+    else:
+        version = args.version or meta["version"]
 
     # Resolve source URL / name
     src_url  = tarball_url(repo_url, version)
@@ -441,7 +499,7 @@ def main() -> None:
     # Resolve SHA-256
     if args.sha256:
         sha256 = args.sha256
-    elif args.fetch_sha256:
+    elif args.use_latest_release or args.fetch_sha256:
         sha256 = fetch_sha256(fetch_repo_url, version)
     else:
         sha256 = "SKIP"

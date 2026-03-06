@@ -90,28 +90,14 @@ The `packaging/` directory is excluded from git (it holds build artifacts).
 `gen_pkgbuild.py` generates both files fresh each time — the workflow does this
 automatically on every release, and you can do the same locally for the first push.
 
-**If the version in `Cargo.toml` corresponds to a published release** (i.e. a
-matching git tag exists upstream at `https://github.com/himmelblau-idm/himmelblau`):
+Use `--use-latest-release` to generate a PKGBUILD that targets the most recently
+published upstream release.  This is always safe because it queries the GitHub
+Releases API and only uses tags that already exist:
 
 ```bash
 # From the root of this repository:
-python3 scripts/gen_pkgbuild.py --fetch-sha256
+python3 scripts/gen_pkgbuild.py --use-latest-release
 # Output written to packaging/aur/PKGBUILD and packaging/aur/.SRCINFO
-```
-
-**If the version is still in development** (no upstream tag yet), use
-`--sha256 SKIP` to generate a placeholder PKGBUILD for the initial push, then
-update it with the real checksum once the release is tagged:
-
-```bash
-python3 scripts/gen_pkgbuild.py --sha256 SKIP
-```
-
-You can also target your fork directly during pre-release validation:
-
-```bash
-python3 scripts/gen_pkgbuild.py --fetch-sha256 \
-    --upstream-repo https://github.com/YourFork/himmelblau
 ```
 
 ### 5b. Clone the (empty) AUR repository
@@ -143,27 +129,32 @@ After this first push the package page will be visible at
 
 ## 6. Validate the workflow end-to-end
 
-Because the upstream tagging workflow runs on `stable-*` branches, you can
-trigger a test run in your fork by pushing a dummy tag:
+Because the `aur-publish` workflow triggers on version-shaped tags, you can
+trigger a test run in your fork by pushing any matching dummy tag:
 
 ```bash
-git tag 4.0.0-test
-git push origin 4.0.0-test
+git tag 0.0.0-test
+git push origin 0.0.0-test
 ```
 
 Watch the **Actions** tab on GitHub.  The `aur-publish` job will:
 
-1. Compute the SHA-256 of the release tarball.
-2. Regenerate `PKGBUILD` and `.SRCINFO`.
-3. Clone the AUR repo, copy the files, and push.
+1. Query the GitHub Releases API for the **latest published upstream release**.
+2. Compute the SHA-256 of that release's tarball.
+3. Regenerate `PKGBUILD` and `.SRCINFO`.
+4. Clone the AUR repo, copy the files, and push.
+
+> [!NOTE]
+> The version packaged is always the *latest upstream release*, not the tag you
+> pushed — the tag is just the workflow trigger.
 
 Check the result at <https://aur.archlinux.org/packages/himmelblau>.
 
 > [!NOTE]
 > Remove the test tag when you are done:
 > ```bash
-> git push origin --delete 4.0.0-test
-> git tag -d 4.0.0-test
+> git push origin --delete 0.0.0-test
+> git tag -d 0.0.0-test
 > ```
 
 ---
@@ -195,11 +186,11 @@ makepkg --printsrcinfo
 This validates the PKGBUILD syntax and regenerates `.SRCINFO` without
 downloading sources or compiling anything.  Takes only a few seconds.
 
-First, generate the PKGBUILD if you have not already done so:
+First, generate the PKGBUILD targeting the latest published upstream release:
 
 ```bash
 # From the root of the repository:
-python3 scripts/gen_pkgbuild.py --fetch-sha256
+python3 scripts/gen_pkgbuild.py --use-latest-release
 ```
 
 Then spin up a throwaway Arch Linux container and run the check:
@@ -218,11 +209,6 @@ podman run --rm \
 The `:z` volume flag relabels the mount for SELinux-enforcing hosts (Fedora,
 RHEL, etc.); it is harmless on non-SELinux systems.
 
-> [!NOTE]
-> If you generated the PKGBUILD with `--sha256 SKIP` (no upstream tag yet),
-> add `--skipinteg` to the `makepkg` call above to suppress the missing-checksum
-> error during the metadata check.
-
 ---
 
 ### 7c. Using `podman` — full build test (~20–40 minutes)
@@ -231,14 +217,6 @@ This mirrors what a real `makepkg` run on an Arch user's machine would do:
 downloads the release tarball, runs `cargo fetch`, compiles the whole workspace,
 and produces a `.pkg.tar.zst` in `packaging/aur/`.
 
-> [!WARNING]
-> The generated PKGBUILD's `source=` URL always points to the **canonical
-> upstream** (`himmelblau-idm/himmelblau`).  This means `makepkg` will try to
-> download a tarball from that repository, and the build will fail with a
-> **404** if the version in `Cargo.toml` has not yet been published there as a
-> tagged release.  If you are working on an unreleased version, use
-> **[step 7d](#7d-using-podman--testing-a-pre-release--fork-build)** instead.
-
 > [!IMPORTANT]
 > The container needs outbound internet access (to download the source tarball
 > and Rust crates).  The build takes 20–40 minutes on typical hardware.
@@ -246,10 +224,10 @@ and produces a `.pkg.tar.zst` in `packaging/aur/`.
 > prevents build scripts from silently modifying your system), so the script
 > creates a `builder` user inside the container.
 
-First, generate the PKGBUILD against the already-published release:
+First, generate the PKGBUILD targeting the latest published upstream release:
 
 ```bash
-python3 scripts/gen_pkgbuild.py --fetch-sha256
+python3 scripts/gen_pkgbuild.py --use-latest-release
 ```
 
 Then run the container build:
@@ -294,72 +272,6 @@ podman run --rm \
 
 ---
 
-### 7d. Using `podman` — testing a pre-release / fork build
-
-Use this path when the version in `Cargo.toml` has **not yet been published**
-at `himmelblau-idm/himmelblau`.  The trick is to push a matching tag to your
-own fork and then point both the SHA-256 fetch *and* the PKGBUILD `source=` URL
-at your fork.
-
-**Step 1 — push the version tag to your fork:**
-
-```bash
-FORK_USER="YourGitHubUsername"
-# Read the version straight from Cargo.toml (workspace.package.version)
-VERSION="$(grep -m1 '^version\s*=' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
-
-git tag "$VERSION"
-git push "https://github.com/${FORK_USER}/himmelblau" "$VERSION"
-```
-
-**Step 2 — generate the PKGBUILD, then patch its `source=` URL to your fork:**
-
-> [!NOTE]
-> `--upstream-repo` controls only where the SHA-256 is fetched from, not the
-> `source=` URL that `makepkg` uses at build time.  The `sed` command below
-> patches the `source=` line so that the container downloads the tarball from
-> your fork rather than the canonical upstream.
-
-```bash
-FORK_USER="YourGitHubUsername"
-FORK_URL="https://github.com/${FORK_USER}/himmelblau"
-
-python3 scripts/gen_pkgbuild.py --fetch-sha256 --upstream-repo "$FORK_URL"
-
-# Redirect the source download to your fork.
-# This patches the canonical upstream path in the source= line, which always
-# takes the form "<owner>/himmelblau/archive/…" as produced by gen_pkgbuild.py.
-sed -i "s|himmelblau-idm/himmelblau/archive|${FORK_USER}/himmelblau/archive|" \
-    packaging/aur/PKGBUILD
-```
-
-**Step 3 — run the podman build** (identical to step 7c above):
-
-```bash
-podman run --rm \
-  -v "$(pwd)/packaging/aur:/pkgbuild:z" \
-  archlinux:latest \
-  bash -c "
-    pacman -Syu --noconfirm &&
-    pacman -S --noconfirm --needed \
-        base-devel cargo cmake clang pkgconf python \
-        krb5 libcap pam sqlite systemd tpm2-tss &&
-    useradd -m builder &&
-    chown -R builder /pkgbuild &&
-    su - builder -c 'cd /pkgbuild && makepkg --noconfirm'
-  "
-```
-
-> [!TIP]
-> Remember to delete the pre-release tag from your fork when you are done so it
-> does not mislead users:
-> ```bash
-> git push "https://github.com/${FORK_USER}/himmelblau" --delete "$VERSION"
-> git tag -d "$VERSION"
-> ```
-
----
-
 ## Quick-reference checklist
 
 - [ ] AUR account created (or existing account confirmed)
@@ -369,5 +281,4 @@ podman run --rm \
 - [ ] Initial PKGBUILD pushed to AUR manually (step 5 above)
 - [ ] Workflow validated with a test tag (step 6 above)
 - [ ] (Optional) PKGBUILD metadata validated with `podman` (step 7b above)
-- [ ] (Optional) Full build tested with `podman` — published release (step 7c above)
-- [ ] (Optional) Full build tested with `podman` — pre-release / fork (step 7d above)
+- [ ] (Optional) Full build tested with `podman` (step 7c above)
