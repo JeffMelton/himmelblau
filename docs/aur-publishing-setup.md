@@ -200,11 +200,10 @@ podman run --rm \
   -v "$(pwd)/packaging/aur:/pkgbuild:z" \
   archlinux:latest \
   bash -c "
-    # pacman 6.1+ runs hooks inside a landlock/seccomp sandbox that segfaults
-    # in rootless container environments.  DisableSandbox must be inserted
-    # under the [options] section of pacman.conf (INI format); appending it
-    # anywhere else is silently ignored.
-    grep -qxF 'DisableSandbox' /etc/pacman.conf || sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf;
+    # pacman's hook sandbox (landlock + seccomp) segfaults in rootless podman
+    # containers.  archlinux:latest ships /etc/pacman.conf with the fix already
+    # present but commented out — just uncomment it.
+    sed -i 's/^#DisableSandboxSyscalls$/DisableSandboxSyscalls/' /etc/pacman.conf;
     pacman -Sy --noconfirm base-devel &&
     cd /pkgbuild &&
     makepkg --printsrcinfo
@@ -242,12 +241,11 @@ podman run --rm \
   -v "$(pwd)/packaging/aur:/pkgbuild:z" \
   archlinux:latest \
   bash -c "
-    # pacman 6.1+ runs hooks inside a landlock/seccomp sandbox that segfaults
-    # in rootless container environments.  DisableSandbox must be inserted
-    # under the [options] section of pacman.conf (INI format); appending it
-    # anywhere else is silently ignored.  This also disables the sandbox for
-    # pacman calls made internally by 'makepkg -s'.
-    grep -qxF 'DisableSandbox' /etc/pacman.conf || sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf;
+    # pacman's hook sandbox (landlock + seccomp) segfaults in rootless podman
+    # containers.  archlinux:latest ships /etc/pacman.conf with the fix already
+    # present but commented out — just uncomment it.  This covers direct pacman
+    # calls and any pacman invocations made internally by 'makepkg -s'.
+    sed -i 's/^#DisableSandboxSyscalls$/DisableSandboxSyscalls/' /etc/pacman.conf;
 
     # Refresh keyring and install every build dependency up-front
     pacman -Syu --noconfirm &&
