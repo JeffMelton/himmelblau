@@ -168,10 +168,12 @@ Check the result at <https://aur.archlinux.org/packages/himmelblau>.
 
 ---
 
-## 7. (Optional) Test the PKGBUILD locally on Arch Linux
+## 7. (Optional) Test the PKGBUILD locally
 
-On any Arch Linux machine (or an `archlinux` Docker container) you can
-validate the package builds and installs cleanly before relying on CI:
+### 7a. Native Arch Linux
+
+On any Arch Linux machine you can validate the package builds cleanly before
+relying on CI:
 
 ```bash
 # Install build dependencies
@@ -182,9 +184,97 @@ sudo pacman -S --needed base-devel rust cmake clang pkgconf python krb5 \
 cd packaging/aur/
 makepkg -s --noconfirm
 
-# Inspect the built package
-makepkg --printsrcinfo    # verify .SRCINFO matches expectations
+# Verify .SRCINFO matches expectations
+makepkg --printsrcinfo
 ```
+
+---
+
+### 7b. Using `podman` — fast metadata check (no compilation)
+
+This validates the PKGBUILD syntax and regenerates `.SRCINFO` without
+downloading sources or compiling anything.  Takes only a few seconds.
+
+First, generate the PKGBUILD if you have not already done so:
+
+```bash
+# From the root of the repository:
+python3 scripts/gen_pkgbuild.py --fetch-sha256
+```
+
+Then spin up a throwaway Arch Linux container and run the check:
+
+```bash
+podman run --rm \
+  -v "$(pwd)/packaging/aur:/pkgbuild:z" \
+  archlinux:latest \
+  bash -c "
+    pacman -Sy --noconfirm base-devel &&
+    cd /pkgbuild &&
+    makepkg --printsrcinfo
+  "
+```
+
+The `:z` volume flag relabels the mount for SELinux-enforcing hosts (Fedora,
+RHEL, etc.); it is harmless on non-SELinux systems.
+
+> [!NOTE]
+> If you generated the PKGBUILD with `--sha256 SKIP` (no upstream tag yet),
+> add `--skipinteg` to the `makepkg` call above to suppress the missing-checksum
+> error during the metadata check.
+
+---
+
+### 7c. Using `podman` — full build test (~20–40 minutes)
+
+This mirrors what a real `makepkg` run on an Arch user's machine would do:
+downloads the release tarball, runs `cargo fetch`, compiles the whole workspace,
+and produces a `.pkg.tar.zst` in `packaging/aur/`.
+
+> [!IMPORTANT]
+> The container needs outbound internet access (to download the source tarball
+> and Rust crates).  The build takes 20–40 minutes on typical hardware.
+> `makepkg` deliberately refuses to run as `root` (a security design choice that
+> prevents build scripts from silently modifying your system), so the script
+> creates a `builder` user inside the container.
+
+```bash
+podman run --rm \
+  -v "$(pwd)/packaging/aur:/pkgbuild:z" \
+  archlinux:latest \
+  bash -c "
+    # Refresh keyring and install every build dependency up-front
+    pacman -Syu --noconfirm &&
+    pacman -S --noconfirm --needed \
+        base-devel cargo cmake clang pkgconf python \
+        krb5 libcap pam sqlite systemd tpm2-tss &&
+
+    # makepkg must not run as root
+    useradd -m builder &&
+    chown -R builder /pkgbuild &&
+
+    # Build the package (downloads tarball, compiles, packages)
+    su - builder -c 'cd /pkgbuild && makepkg --noconfirm'
+  "
+```
+
+On success the `.pkg.tar.zst` archive appears in `packaging/aur/`.  Inspect it
+with:
+
+```bash
+ls -lh packaging/aur/himmelblau-*.pkg.tar.zst
+
+# List every installed file without extracting
+podman run --rm \
+  -v "$(pwd)/packaging/aur:/pkgbuild:z" \
+  archlinux:latest \
+  bash -c "pacman -Qlp /pkgbuild/himmelblau-*.pkg.tar.zst"
+```
+
+> [!TIP]
+> Pass `-e CARGO_NET_OFFLINE=false` explicitly if the container blocks outbound
+> traffic by default in your environment (this is the correct default, but some
+> rootless-podman network configurations restrict it).
 
 ---
 
@@ -196,3 +286,5 @@ makepkg --printsrcinfo    # verify .SRCINFO matches expectations
 - [ ] Private key added to GitHub repository secret as `AUR_SSH_PRIVATE_KEY`
 - [ ] Initial PKGBUILD pushed to AUR manually (step 5 above)
 - [ ] Workflow validated with a test tag (step 6 above)
+- [ ] (Optional) PKGBUILD metadata validated with `podman` (step 7b above)
+- [ ] (Optional) Full build tested with `podman` (step 7c above)
