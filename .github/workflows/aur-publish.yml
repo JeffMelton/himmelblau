@@ -50,17 +50,8 @@ jobs:
 
           # Upstream URL is the canonical source — read from Cargo.toml so
           # it stays in sync automatically when the repository field changes.
-          UPSTREAM=$(python3 - <<'PYEOF'
-import sys
-try:
-    import tomllib
-except ImportError:
-    import tomli as tomllib
-with open("Cargo.toml", "rb") as f:
-    data = tomllib.load(f)
-print(data["workspace"]["package"]["repository"].rstrip("/").removesuffix(".git"))
-PYEOF
-          )
+          UPSTREAM=$(grep '^repository' Cargo.toml | head -1 \
+            | sed 's/.*= *"\(.*\)"/\1/' | sed 's|/*$||' | sed 's|\.git$||')
 
           # GitHub tags may be bare (4.0.0) or v-prefixed (v4.0.0).
           # Download once per candidate into a temp file; compute hash from it.
