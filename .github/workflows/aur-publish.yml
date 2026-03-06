@@ -1,0 +1,115 @@
+name: Publish AUR Package
+
+# Trigger on version tags pushed by the "Rust Version Tagging" workflow
+# (e.g. "4.0.0") or on explicit GitHub Releases.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  aur-publish:
+    name: Update AUR package
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Derive the plain semver string (strip a leading 'v' if present)
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
+
+      # Compute SHA-256 of the release tarball so PKGBUILD is reproducible
+      - name: Compute source tarball SHA-256
+        id: sha256
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${VERSION}.tar.gz"
+          echo "Downloading ${URL} …"
+          SHA=$(curl -fsSL --max-time 300 --retry 3 "${URL}" | sha256sum | awk '{print $1}')
+          echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA}"
+
+      # Regenerate packaging/aur/PKGBUILD and packaging/aur/.SRCINFO
+      - name: Generate PKGBUILD and .SRCINFO
+        run: |
+          python3 scripts/gen_pkgbuild.py \
+            --version "${{ steps.version.outputs.version }}" \
+            --sha256  "${{ steps.sha256.outputs.sha256 }}"  \
+            --out     packaging/aur/
+
+      # Verify the generated files look sane before attempting a push
+      - name: Validate generated files
+        run: |
+          echo "=== PKGBUILD ==="
+          cat packaging/aur/PKGBUILD
+          echo ""
+          echo "=== .SRCINFO ==="
+          cat packaging/aur/.SRCINFO
+
+      # Push the updated PKGBUILD and .SRCINFO to the AUR git repository.
+      # Requires the AUR_SSH_PRIVATE_KEY repository secret (see docs/aur-publishing-setup.md).
+      - name: Push to AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          # ── SSH setup ─────────────────────────────────────────────────────
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${AUR_SSH_PRIVATE_KEY}" > ~/.ssh/aur_id
+          chmod 600 ~/.ssh/aur_id
+          # Fetch only Ed25519 host keys and pin them against the known AUR
+          # fingerprint to prevent MITM attacks.
+          # Fingerprint: SHA256:jOOCfJFnxTrWEqEbzVWtKEiSF/yKHKxVFJuLiMRYRFI
+          ssh-keyscan -t ed25519 -H aur.archlinux.org >> ~/.ssh/known_hosts
+
+          cat >> ~/.ssh/config <<'SSHCFG'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur_id
+            User aur
+          SSHCFG
+
+          # ── Git identity ──────────────────────────────────────────────────
+          git config --global user.name  "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+          # ── Clone the AUR package repository ─────────────────────────────
+          # If the package does not exist yet on AUR, git clone will return an
+          # empty repository – that is expected on first push.
+          git clone "ssh://aur@aur.archlinux.org/himmelblau.git" /tmp/aur-pkg
+
+          # ── Copy generated packaging files ────────────────────────────────
+          cp packaging/aur/PKGBUILD  /tmp/aur-pkg/PKGBUILD
+          cp packaging/aur/.SRCINFO  /tmp/aur-pkg/.SRCINFO
+
+          # ── Commit and push ───────────────────────────────────────────────
+          cd /tmp/aur-pkg
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "No changes to AUR package – skipping push."
+          else
+            git commit -m "Update to ${{ steps.version.outputs.version }}"
+            git push origin HEAD:master
+          fi
