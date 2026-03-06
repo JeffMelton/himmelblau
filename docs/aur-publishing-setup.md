@@ -200,6 +200,9 @@ podman run --rm \
   -v "$(pwd)/packaging/aur:/pkgbuild:z" \
   archlinux:latest \
   bash -c "
+    # pacman 6.1+ uses a user-namespace sandbox that segfaults in rootless
+    # container environments.  Disable it before any pacman invocation.
+    grep -qxF 'DisableSandbox' /etc/pacman.conf || echo 'DisableSandbox' >> /etc/pacman.conf;
     pacman -Sy --noconfirm base-devel &&
     cd /pkgbuild &&
     makepkg --printsrcinfo
@@ -237,6 +240,11 @@ podman run --rm \
   -v "$(pwd)/packaging/aur:/pkgbuild:z" \
   archlinux:latest \
   bash -c "
+    # pacman 6.1+ uses a user-namespace sandbox that segfaults in rootless
+    # container environments.  Disable it before any pacman invocation.
+    # This also covers pacman calls made internally by 'makepkg -s'.
+    grep -qxF 'DisableSandbox' /etc/pacman.conf || echo 'DisableSandbox' >> /etc/pacman.conf;
+
     # Refresh keyring and install every build dependency up-front
     pacman -Syu --noconfirm &&
     pacman -S --noconfirm --needed \
