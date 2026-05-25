@@ -42,9 +42,6 @@ makedepends=(
 optdepends=(
   'chromium: Microsoft Entra SSO via the Chromium native-messaging host'
   'firefox: Microsoft Entra SSO via the Firefox native-messaging host'
-  'google-chrome: Microsoft Entra SSO via the Chrome native-messaging host'
-  'authselect: PAM stack management on systems that use it'
-  'oddjob-mkhomedir: automatic home directory creation on first login'
 )
 
 # Virtual-package claims declared upstream across the workspace
