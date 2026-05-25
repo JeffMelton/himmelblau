@@ -1,0 +1,170 @@
+# Maintainer: Jeff Melton <jeff@melton.cloud>
+# Upstream maintainer: David Mulder <dmulder@suse.com>
+#
+# This file is a template. CI substitutes:
+#   @PKGVER@  → the upstream release version (e.g. 3.1.5)
+#   @SHA256@  → sha256 of the upstream source tarball
+# .SRCINFO is always regenerated via `makepkg --printsrcinfo`; it is never committed.
+
+pkgname=himmelblau
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc="Microsoft Entra ID (Azure AD) authentication for Linux — NSS, PAM, broker, and SSO integration"
+arch=('x86_64' 'aarch64')
+url="https://github.com/himmelblau-idm/himmelblau"
+license=('GPL-3.0-or-later')
+
+# Runtime: built with --features tpm by default, so tpm2-tss is required (not optional).
+# systemd-libs is intentionally omitted — systemd pulls it transitively.
+depends=(
+  'dbus'
+  'krb5'
+  'libcap'
+  'libunistring'
+  'openssh'
+  'openssl'
+  'pam'
+  'pcre2'
+  'sqlite'
+  'systemd'
+  'tpm2-tss'
+)
+
+makedepends=(
+  'cargo'
+  'clang'
+  'cmake'
+  'git'
+  'pkgconf'
+  'python'
+)
+
+optdepends=(
+  'chromium: Microsoft Entra SSO via the Chromium native-messaging host'
+  'firefox: Microsoft Entra SSO via the Firefox native-messaging host'
+  'google-chrome: Microsoft Entra SSO via the Chrome native-messaging host'
+  'authselect: PAM stack management on systems that use it'
+  'oddjob-mkhomedir: automatic home directory creation on first login'
+)
+
+# Virtual-package claims declared upstream across the workspace
+# (see [package.metadata.generate-rpm.provides] in src/{daemon,nss,pam,broker,sso}/Cargo.toml).
+# Bundled package, so we forward the union.
+provides=(
+  'aad-cli'
+  'aad-common'
+  'authd'
+  'authd-msentraid'
+  'libnss-aad'
+  'libpam-aad'
+  'linux-entra-sso'
+  'intune-portal'
+  'microsoft-identity-broker'
+)
+
+# The user's edited config survives upgrades; pacman writes the new version as .pacnew.
+backup=('etc/himmelblau/himmelblau.conf')
+
+install="${pkgname}.install"
+
+# Rename the GitHub archive on disk so it doesn't collide with other projects' tarballs.
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/himmelblau-idm/himmelblau/archive/refs/tags/${pkgver}.tar.gz")
+sha256sums=('@SHA256@')
+
+build() {
+  cd "${pkgname}-${pkgver}"
+
+  # 1. Generate version-gated systemd unit files into ./platform/opensuse/
+  #    (this matches what scripts/install_local.py and the Makefile RPM/Gentoo
+  #    paths do — these .service files are build artifacts, not source files).
+  python3 scripts/gen_servicefiles.py --out ./platform/opensuse/
+
+  # 2. Generate himmelblau.conf.example from the XML parameter docs
+  #    (same source-of-truth scripts/install_local.py uses).
+  mkdir -p target/config target/debian
+  python3 src/common/scripts/gen_param_code.py \
+    --gen-conf-example --conf-example-output target/config/himmelblau.conf.example \
+    --gen-debian-conf-example --debian-conf-example-output target/debian/himmelblau.conf.example
+
+  # 3. Standard release build with the TPM feature (the upstream production default).
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --release --frozen --features tpm
+}
+
+package() {
+  cd "${pkgname}-${pkgver}"
+
+  # ── Binaries ─────────────────────────────────────────────────────────────────
+  install -Dm755 target/release/aad-tool          "${pkgdir}/usr/bin/aad-tool"
+  install -Dm755 target/release/linux-entra-sso   "${pkgdir}/usr/bin/linux-entra-sso"
+  install -Dm755 target/release/himmelblaud       "${pkgdir}/usr/sbin/himmelblaud"
+  install -Dm755 target/release/himmelblaud_tasks "${pkgdir}/usr/sbin/himmelblaud_tasks"
+  # Upstream's broker binary is named 'broker' but installs as 'himmelblau_broker' to avoid collisions.
+  install -Dm755 target/release/broker            "${pkgdir}/usr/sbin/himmelblau_broker"
+
+  # ── NSS + PAM modules (Arch uses /usr/lib, not /usr/lib64) ───────────────────
+  install -Dm755 target/release/libnss_himmelblau.so "${pkgdir}/usr/lib/libnss_himmelblau.so.2"
+  install -Dm755 target/release/libpam_himmelblau.so "${pkgdir}/usr/lib/security/pam_himmelblau.so"
+
+  # ── HSM PIN init helper ──────────────────────────────────────────────────────
+  install -Dm755 src/daemon/scripts/himmelblau-init-hsm-pin \
+                                                  "${pkgdir}/usr/lib/himmelblau/himmelblau-init-hsm-pin"
+
+  # ── systemd units (generated above) + D-Bus service + user unit ──────────────
+  install -Dm644 platform/opensuse/himmelblaud.service \
+                                                  "${pkgdir}/usr/lib/systemd/system/himmelblaud.service"
+  install -Dm644 platform/opensuse/himmelblaud-tasks.service \
+                                                  "${pkgdir}/usr/lib/systemd/system/himmelblaud-tasks.service"
+  install -Dm644 platform/opensuse/himmelblau-hsm-pin-init.service \
+                                                  "${pkgdir}/usr/lib/systemd/system/himmelblau-hsm-pin-init.service"
+  install -Dm644 platform/opensuse/com.microsoft.identity.broker1.service \
+                                                  "${pkgdir}/usr/share/dbus-1/services/com.microsoft.identity.broker1.service"
+  install -Dm644 platform/debian/himmelblau-broker.service \
+                                                  "${pkgdir}/usr/lib/systemd/user/himmelblau-broker.service"
+
+  # ── GDM service override (only takes effect if gdm is installed) ─────────────
+  install -Dm644 src/config/gdm3_service_override.conf \
+                                                  "${pkgdir}/usr/lib/systemd/system/display-manager.service.d/override.conf"
+
+  # ── Default config + example ─────────────────────────────────────────────────
+  install -Dm644 target/config/himmelblau.conf.example \
+                                                  "${pkgdir}/etc/himmelblau/himmelblau.conf"
+  install -Dm644 target/config/himmelblau.conf.example \
+                                                  "${pkgdir}/usr/share/doc/${pkgname}/himmelblau.conf.example"
+
+  # ── tmpfiles.d ───────────────────────────────────────────────────────────────
+  install -Dm644 src/daemon/src/himmelblaud.tmpfiles.conf \
+                                                  "${pkgdir}/usr/lib/tmpfiles.d/himmelblaud.conf"
+  install -Dm644 src/daemon/src/himmelblau-policies.tmpfiles.conf \
+                                                  "${pkgdir}/usr/lib/tmpfiles.d/himmelblau-policies.conf"
+  install -Dm644 src/nss/src/nss-himmelblau.tmpfiles.conf \
+                                                  "${pkgdir}/usr/lib/tmpfiles.d/nss-himmelblau.conf"
+
+  # ── Browser SSO native messaging hosts ───────────────────────────────────────
+  install -Dm644 src/sso/src/firefox/linux_entra_sso.json \
+                                                  "${pkgdir}/usr/lib/mozilla/native-messaging-hosts/linux_entra_sso.json"
+  install -Dm644 src/sso/src/chrome/linux_entra_sso.json \
+                                                  "${pkgdir}/etc/opt/chrome/native-messaging-hosts/linux_entra_sso.json"
+  install -Dm644 src/sso/src/chrome/linux_entra_sso.json \
+                                                  "${pkgdir}/etc/chromium/native-messaging-hosts/linux_entra_sso.json"
+
+  # ── Managed browser policies (sso-policies subpackage upstream) ──────────────
+  install -Dm644 src/sso-policies/src/chrome/policies.json \
+                                                  "${pkgdir}/etc/opt/chrome/policies/managed/himmelblau.json"
+  install -Dm644 src/sso-policies/src/chrome/policies.json \
+                                                  "${pkgdir}/etc/chromium/policies/managed/himmelblau.json"
+  install -Dm644 src/sso-policies/src/firefox/policies.json \
+                                                  "${pkgdir}/usr/share/doc/${pkgname}/firefox-policies.json.example"
+
+  # ── sshd_config drop-in (himmelblau-sshd-config subpackage upstream) ─────────
+  install -Dm644 platform/el/sshd_config \
+                                                  "${pkgdir}/etc/ssh/sshd_config.d/himmelblau.conf"
+
+  # ── Documentation ────────────────────────────────────────────────────────────
+  install -Dm644 README.md   "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 man/man1/aad-tool.1         "${pkgdir}/usr/share/man/man1/aad-tool.1"
+  install -Dm644 man/man5/himmelblau.conf.5  "${pkgdir}/usr/share/man/man5/himmelblau.conf.5"
+  install -Dm644 man/man8/himmelblaud.8      "${pkgdir}/usr/share/man/man8/himmelblaud.8"
+  install -Dm644 man/man8/himmelblaud_tasks.8 "${pkgdir}/usr/share/man/man8/himmelblaud_tasks.8"
+}
