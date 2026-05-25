@@ -215,6 +215,31 @@ Flake based configurations add this repository to their inputs and enable the se
 }
 ```
 
+### Arch Linux
+
+Himmelblau is available on the [AUR](https://aur.archlinux.org/packages/himmelblau)
+as a single package that bundles the daemon, NSS module, PAM module, broker,
+SSO helper, SSO policies, and sshd-config defaults.
+
+With an AUR helper (`paru`, `yay`, etc.):
+
+```sh
+paru -S himmelblau
+```
+
+Or manually with `makepkg`:
+
+```sh
+git clone https://aur.archlinux.org/himmelblau.git
+cd himmelblau
+makepkg -si
+```
+
+If you'd rather review the PKGBUILD against this repository before building,
+the canonical source-of-truth template lives at `platform/arch/PKGBUILD.in`,
+and there's a local validation harness under `platform/arch/test/` that runs
+the full lint+build inside an `archlinux:base-devel` container.
+
 ## Demos
 
 ### Windows Hello on Linux via GDM
