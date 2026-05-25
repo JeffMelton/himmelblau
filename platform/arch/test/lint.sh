@@ -129,6 +129,12 @@ sed -i -e "s|@PKGVER@|${PKGVER}|g" -e "s|@SHA256@|${SHA256}|g" PKGBUILD
 useradd -m builder
 chown -R builder:builder /work
 
+# makepkg -s shells out to `sudo pacman -S` for missing depends, so the builder
+# needs passwordless sudo. base-devel ships sudo; we just authorize it.
+install -d -m 0750 /etc/sudoers.d
+echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+chmod 0440 /etc/sudoers.d/builder
+
 echo ">> bash -n PKGBUILD"
 bash -n PKGBUILD
 
@@ -146,9 +152,9 @@ head -n5 .SRCINFO
 
 if [[ "${MODE}" == "build" ]]; then
   echo ">> makepkg -s (full build, this is the long one)"
-  # SKIP integrity already, but we computed a real sha256 above so makepkg
-  # will verify it. --noconfirm for unattended dep install.
-  su builder -c 'cd /work && makepkg -s --noconfirm --skipinteg=false'
+  # We computed the real sha256 above so makepkg's default integrity
+  # checking will verify it. --noconfirm for unattended dep install.
+  su builder -c 'cd /work && makepkg -s --noconfirm'
 
   PKG_FILE="$(ls /work/*.pkg.tar.zst | head -n1)"
   echo ">> namcap on built package: ${PKG_FILE}"
