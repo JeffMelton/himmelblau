@@ -36,11 +36,10 @@ scriptlet that CI publishes to the AUR.
 
 ## Why a template instead of a generator?
 
-See `docs/adr/0002-pkgbuild-source-of-truth.md`. Short version: AUR convention
-favors checked-in PKGBUILDs, the audit on the previous generator surfaced
-hallucinated install lines that survived multiple review passes, and the only
-field a generator would actually derive (`pkgver`) is already derived from the
-GitHub release tag in CI.
+AUR convention favors checked-in PKGBUILDs, an audit on a previous Python
+generator surfaced incorrect install lines that survived multiple review
+passes, and the only field a generator would actually derive (`pkgver`) is
+already derived from the GitHub release tag in CI.
 
 ## Local testing
 
