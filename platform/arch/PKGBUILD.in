@@ -35,6 +35,7 @@ makedepends=(
   'clang'
   'cmake'
   'git'
+  'perl'
   'pkgconf'
   'python'
 )
@@ -77,16 +78,44 @@ build() {
   python3 scripts/gen_servicefiles.py --out ./platform/opensuse/
 
   # 2. Generate himmelblau.conf.example from the XML parameter docs
-  #    (same source-of-truth scripts/install_local.py uses).
+  #    (same source-of-truth scripts/install_local.py uses). Two distinct
+  #    facts about the upstream tree make this delicate:
+  #      (a) the gen_param_code.py script moved from scripts/ to
+  #          src/common/scripts/ post-3.1.5 (commit 238a9e9f);
+  #      (b) the --gen-conf-example / --gen-debian-conf-example flags
+  #          were added post-3.1.5 (commit 1f848d27) — at tag 3.1.5 the
+  #          example files are still checked into the tree at
+  #          src/config/himmelblau.conf.example and
+  #          platform/debian/himmelblau.conf.example, and the script
+  #          rejects --gen-conf-example with 'unrecognized arguments'.
+  #    Handle both shapes so the PKGBUILD works against the current
+  #    release (3.1.5) and any future release.
   mkdir -p target/config target/debian
-  python3 src/common/scripts/gen_param_code.py \
-    --gen-conf-example --conf-example-output target/config/himmelblau.conf.example \
-    --gen-debian-conf-example --debian-conf-example-output target/debian/himmelblau.conf.example
+  GEN_PARAM_CODE=src/common/scripts/gen_param_code.py
+  [ -f "$GEN_PARAM_CODE" ] || GEN_PARAM_CODE=scripts/gen_param_code.py
+  if python3 "$GEN_PARAM_CODE" --help 2>&1 | grep -q -- '--gen-conf-example'; then
+    python3 "$GEN_PARAM_CODE" \
+      --gen-conf-example --conf-example-output target/config/himmelblau.conf.example \
+      --gen-debian-conf-example --debian-conf-example-output target/debian/himmelblau.conf.example
+  else
+    cp src/config/himmelblau.conf.example target/config/himmelblau.conf.example
+    cp platform/debian/himmelblau.conf.example target/debian/himmelblau.conf.example
+  fi
 
-  # 3. Standard release build with the TPM feature (the upstream production default).
+  # 3. Standard release build with the TPM feature (the upstream production
+  #    default). --locked uses Cargo.lock-pinned dependency versions (the
+  #    set upstream actually tested against at this tag) while still
+  #    allowing network fetch — unlike --frozen, which adds --offline and
+  #    breaks against a fresh AUR build container that has no cargo cache.
+  #    --workspace --exclude himmelblau-fuzz omits the cargo-fuzz harness
+  #    crate, whose binaries are libfuzzer-sys targets without a `main`
+  #    function and only link under `cargo fuzz`. Building them with plain
+  #    `cargo build` produces 'undefined symbol: main' linker errors
+  #    regardless of host or distro.
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  cargo build --release --frozen --features tpm
+  cargo build --release --locked --features tpm \
+    --workspace --exclude himmelblau-fuzz
 }
 
 package() {
