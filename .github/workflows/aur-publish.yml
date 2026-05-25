@@ -42,6 +42,15 @@ jobs:
     name: Update AUR package
     runs-on: ubuntu-latest
 
+    # Upstream repo that publishes the release tarballs the AUR PKGBUILD
+    # references in its source=() line. Hardcoded so this workflow can live
+    # on a fork (where ${{ github.repository }} would be the fork) without
+    # 404-ing on the tarball fetch. When this workflow is upstreamed, change
+    # to ${{ github.repository }} or delete the env (gh release / curl will
+    # fall back to the current repo automatically).
+    env:
+      SOURCE_REPO: himmelblau-idm/himmelblau
+
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
@@ -75,8 +84,8 @@ jobs:
             VERSION="${GITHUB_REF_NAME#v}"
             echo "Source: triggering tag → ${VERSION}"
           else
-            VERSION="$(gh release view --json tagName -q '.tagName' | sed 's/^v//')"
-            echo "Source: GitHub latest release → ${VERSION}"
+            VERSION="$(gh release view --repo "${SOURCE_REPO}" --json tagName -q '.tagName' | sed 's/^v//')"
+            echo "Source: GitHub latest release on ${SOURCE_REPO} → ${VERSION}"
           fi
 
           if [ -z "${VERSION}" ]; then
@@ -95,7 +104,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
+          REPO_URL="https://github.com/${SOURCE_REPO}"
           SHA=""
           TMPTAR="$(mktemp)"
           trap 'rm -f "${TMPTAR}"' EXIT
@@ -146,6 +155,36 @@ jobs:
           grep -q "^pkgver=${{ steps.version.outputs.version }}\$" aur-work/PKGBUILD
           grep -q "^sha256sums=('${{ steps.sha256.outputs.sha256 }}')\$" aur-work/PKGBUILD
           echo "✓ rendered PKGBUILD has expected pkgver + sha256sums"
+
+      # ── Generate .SRCINFO inside archlinux so it can be inspected ───────────
+      # Mirrors what the KSXGitHub action does internally — by doing it here
+      # too we (a) catch metadata regressions before the action runs and
+      # (b) make the .SRCINFO available as a workflow artifact for dry runs.
+      - name: Generate .SRCINFO
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/aur-work:/work" -w /work archlinux:base-devel bash -c '
+            sed -i "s/^#DisableSandboxSyscalls$/DisableSandboxSyscalls/" /etc/pacman.conf
+            useradd -m builder
+            chown -R builder /work
+            su builder -c "makepkg --printsrcinfo" > .SRCINFO
+          '
+          echo "── rendered .SRCINFO ──"
+          cat aur-work/.SRCINFO
+
+      # ── Upload artifacts so dry runs are inspectable from the Actions UI ───
+      # Retention is short because the rendered files are reproducible from
+      # PKGBUILD.in + version + sha at any point.
+      - name: Upload rendered artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aur-package-${{ steps.version.outputs.version }}
+          path: |
+            aur-work/PKGBUILD
+            aur-work/.SRCINFO
+            aur-work/himmelblau.install
+          retention-days: 14
+          if-no-files-found: error
 
       # ── Publish to AUR (or skip on dry_run) ─────────────────────────────────
       # The action handles: SSH key setup, AUR git clone, copy, .SRCINFO
