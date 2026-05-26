@@ -15,21 +15,58 @@ url="https://github.com/himmelblau-idm/himmelblau"
 license=('GPL-3.0-or-later')
 
 # Runtime: built with --features tpm by default, so tpm2-tss is required (not optional).
-# systemd-libs is intentionally omitted — systemd pulls it transitively.
-# 'bash' is declared because usr/lib/himmelblau/himmelblau-init-hsm-pin uses
-# a /bin/sh shebang; on Arch, /bin/sh is provided by the bash package, so we
-# must depend on bash explicitly per Arch packaging guidelines (namcap will
-# otherwise flag 'sh' as an uninstalled dependency on the built package).
+#
+# Dependency selection rationale (validated via source audit + namcap on the
+# built .pkg.tar.zst — see git log for the investigation that produced this):
+#
+#   bash           Required by the /bin/sh shebang in
+#                  usr/lib/himmelblau/himmelblau-init-hsm-pin. On Arch,
+#                  /bin/sh is provided by the bash package.
+#   dbus           The broker exposes com.microsoft.identity.broker1 on the
+#                  session bus; the daemon talks to it over D-Bus.
+#   libunistring   Linked transitively by upstream's PAM crate for safe
+#                  unicode string handling on PAM/NSS inputs.
+#   openssl        Direct ELF dependency on libssl/libcrypto for HTTP TLS
+#                  to Microsoft Entra ID endpoints.
+#   pam            Required by the libpam_himmelblau.so PAM module.
+#   sqlite         Backing store for himmelblaud's user/group/token cache
+#                  (/var/cache/himmelblau/himmelblau.cache.db).
+#   systemd        Required as the init system: the daemons rely on systemd
+#                  socket activation, sd_notify-style readiness reporting,
+#                  and the /usr/lib/systemd/system/ unit files installed by
+#                  this package. Note: sd-notify is implemented in pure Rust
+#                  (no libsystemd link), so namcap reports 'may not be
+#                  needed' against the built binary — that warning is a
+#                  false positive and is allowlisted in platform/arch/test/lint.sh.
+#   tpm2-tss       Direct ELF dependency from the tpm feature, which is on
+#                  by default in the cargo build below.
+#
+# Intentionally NOT in depends (moved to optdepends or dropped entirely):
+#
+#   krb5           Upstream treats this as an RPM 'recommends', not a hard
+#                  requires. himmelblau does not link libkrb5/libgssapi at
+#                  all — it only reads /etc/krb5.conf.d/ and shells out to
+#                  the krb5 user-space tools when present. Listing krb5
+#                  here would force-install it for every himmelblau user,
+#                  including the majority who only need NSS/PAM identity
+#                  lookups and never touch Kerberos. Moved to optdepends.
+#   openssh        Only the etc/ssh/sshd_config.d/himmelblau.conf drop-in
+#                  references openssh, and it has no effect until
+#                  openssh-server is installed. Moved to optdepends; the
+#                  drop-in file itself is harmless when openssh-server is
+#                  absent.
+#   libcap         No source-tree or Cargo-tree usage; no DT_NEEDED entry
+#                  on the built binaries. Dropped.
+#   pcre2          No source-tree or Cargo-tree usage; no DT_NEEDED entry
+#                  on the built binaries. Dropped.
+#   systemd-libs   Implicitly satisfied via libudev.so.1 (Arch packaging
+#                  guidelines say not to declare it explicitly).
 depends=(
   'bash'
   'dbus'
-  'krb5'
-  'libcap'
   'libunistring'
-  'openssh'
   'openssl'
   'pam'
-  'pcre2'
   'sqlite'
   'systemd'
   'tpm2-tss'
@@ -48,6 +85,8 @@ makedepends=(
 optdepends=(
   'chromium: Microsoft Entra SSO via the Chromium native-messaging host'
   'firefox: Microsoft Entra SSO via the Firefox native-messaging host'
+  'krb5: Kerberos ticket utilities (kinit, klist, kdestroy) for inspecting Entra-issued TGTs from /etc/krb5.conf.d/'
+  'openssh-server: server-side SSH integration via the etc/ssh/sshd_config.d/himmelblau.conf drop-in'
 )
 
 # Virtual-package claims declared upstream across the workspace

@@ -198,12 +198,27 @@ if [[ "${MODE}" == "build" ]]; then
   #      cancel each other. Allowlisting both is the documented Arch
   #      packaging workaround for shebang-based dependencies.
   #
-  # IMPORTANT: this allowlist does NOT cover the other "may not be needed"
-  # warnings (krb5/libcap/openssh/pcre2/systemd) — those are genuine
-  # over-declarations that need per-dep runtime testing of PAM/NSS/krb
-  # code paths before being silenced or removed. They stay actionable
-  # until that work lands.
-  NAMCAP_ALLOWLIST='(W: Dependency (libgcc|glibc|systemd-libs) detected and implicitly satisfied|W: Unused shared library .(/usr)?/lib(64)?/ld-linux-(x86-64|aarch64)\.so|W: Referenced library .sh. is an uninstalled dependency|W: Dependency included, but may not be needed \(.bash.\))'
+  #   5. "Dependency included, but may not be needed ('systemd')" — namcap
+  #      limitation. The same DT_NEEDED-only heuristic applies here: the
+  #      sd-notify crate that himmelblaud / himmelblaud_tasks / broker use
+  #      for readiness + watchdog notifications is implemented in pure Rust
+  #      (it talks to the $NOTIFY_SOCKET unix domain socket directly,
+  #      without linking libsystemd). Thus the built binaries have no
+  #      DT_NEEDED on libsystemd.so and namcap reports systemd as
+  #      unnecessary. In reality the package's installed unit files
+  #      (himmelblaud.service, himmelblaud-tasks.service, etc.) and the
+  #      sd-notify protocol both require systemd as the init system at
+  #      runtime, so declaring it is correct. The dependency rationale
+  #      is documented in PKGBUILD.in alongside the depends=() entry.
+  #
+  # IMPORTANT: this allowlist does NOT cover "may not be needed" warnings
+  # for any other dependency. krb5 / libcap / openssh / pcre2 were
+  # previously over-declared and have been resolved by source-audit:
+  # libcap and pcre2 dropped (no source or DT_NEEDED usage), krb5 and
+  # openssh moved to optdepends (real but optional runtime relationships).
+  # See PKGBUILD.in for per-dep rationale and the git history for the
+  # commits that landed those changes.
+  NAMCAP_ALLOWLIST='(W: Dependency (libgcc|glibc|systemd-libs) detected and implicitly satisfied|W: Unused shared library .(/usr)?/lib(64)?/ld-linux-(x86-64|aarch64)\.so|W: Referenced library .sh. is an uninstalled dependency|W: Dependency included, but may not be needed \(.(bash|systemd).\))'
   NAMCAP_ACTIONABLE="$(grep -E ' (W|E): ' namcap-pkg.log | grep -Ev "${NAMCAP_ALLOWLIST}" || true)"
   if [[ -n "${NAMCAP_ACTIONABLE}" ]]; then
     echo "!! namcap reported actionable warnings or errors on built package" >&2
