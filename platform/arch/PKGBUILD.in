@@ -16,7 +16,12 @@ license=('GPL-3.0-or-later')
 
 # Runtime: built with --features tpm by default, so tpm2-tss is required (not optional).
 # systemd-libs is intentionally omitted — systemd pulls it transitively.
+# 'bash' is declared because usr/lib/himmelblau/himmelblau-init-hsm-pin uses
+# a /bin/sh shebang; on Arch, /bin/sh is provided by the bash package, so we
+# must depend on bash explicitly per Arch packaging guidelines (namcap will
+# otherwise flag 'sh' as an uninstalled dependency on the built package).
 depends=(
+  'bash'
   'dbus'
   'krb5'
   'libcap'

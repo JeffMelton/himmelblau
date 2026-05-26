@@ -159,8 +159,30 @@ if [[ "${MODE}" == "build" ]]; then
   PKG_FILE="$(ls /work/*.pkg.tar.zst | head -n1)"
   echo ">> namcap on built package: ${PKG_FILE}"
   namcap "${PKG_FILE}" | tee namcap-pkg.log
-  if grep -E ' (W|E): ' namcap-pkg.log; then
-    echo "!! namcap reported warnings or errors on built package" >&2
+
+  # ── Known-benign namcap warnings (allowlisted before fail-on-warning) ──
+  # These warnings appear on every clean build because they describe
+  # invariants of the Arch base system or Rust binary linking, not
+  # actionable PKGBUILD bugs. The full unfiltered namcap output is still
+  # printed above for visibility; we only filter the failure check.
+  #
+  #   1. "Dependency {libgcc,glibc,systemd-libs} detected and implicitly
+  #      satisfied" — informational. namcap is confirming that ELF deps
+  #      on libgcc_s.so.1, libc.so.6/libm.so.6, libudev.so.1 are pulled
+  #      in transitively by base / our declared deps. Arch packaging
+  #      guidelines explicitly say NOT to declare these in depends=().
+  #
+  #   2. "Unused shared library '/usr/lib64/ld-linux-*.so.*'" — namcap
+  #      false-positive on Rust binaries. The ELF interpreter path that
+  #      rustc emits (/lib64/ld-linux-x86-64.so.2, /lib/ld-linux-aarch64.so.1)
+  #      is the canonical glibc dynamic linker; namcap treats it as an
+  #      "unused shared library" because no DT_NEEDED entry references
+  #      it, which is correct for the interpreter but not actionable.
+  NAMCAP_ALLOWLIST='(W: Dependency (libgcc|glibc|systemd-libs) detected and implicitly satisfied|W: Unused shared library .(/usr)?/lib(64)?/ld-linux-(x86-64|aarch64)\.so)'
+  NAMCAP_ACTIONABLE="$(grep -E ' (W|E): ' namcap-pkg.log | grep -Ev "${NAMCAP_ALLOWLIST}" || true)"
+  if [[ -n "${NAMCAP_ACTIONABLE}" ]]; then
+    echo "!! namcap reported actionable warnings or errors on built package" >&2
+    echo "${NAMCAP_ACTIONABLE}" >&2
     exit 1
   fi
 fi
