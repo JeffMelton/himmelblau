@@ -178,7 +178,32 @@ if [[ "${MODE}" == "build" ]]; then
   #      is the canonical glibc dynamic linker; namcap treats it as an
   #      "unused shared library" because no DT_NEEDED entry references
   #      it, which is correct for the interpreter but not actionable.
-  NAMCAP_ALLOWLIST='(W: Dependency (libgcc|glibc|systemd-libs) detected and implicitly satisfied|W: Unused shared library .(/usr)?/lib(64)?/ld-linux-(x86-64|aarch64)\.so)'
+  #
+  #   3. "Referenced library 'sh' is an uninstalled dependency" — namcap
+  #      limitation. The himmelblau-init-hsm-pin script uses a /bin/sh
+  #      shebang. On Arch, /bin/sh is provided by the bash package
+  #      (bash declares provides=('sh')), and we DO declare bash in
+  #      depends=() for exactly this reason. namcap, however, does not
+  #      consult provides=() when validating shebang interpreters — it
+  #      looks up the literal name 'sh', finds no package named 'sh',
+  #      and reports it as uninstalled. The dependency is genuinely
+  #      satisfied at install time; this warning is a tooling false-positive.
+  #
+  #   4. "Dependency included, but may not be needed ('bash')" — namcap
+  #      limitation. namcap only checks ELF DT_NEEDED entries when deciding
+  #      whether a declared dep is "needed". It is unaware of shebang
+  #      interpreters, so it cannot see that bash is genuinely required
+  #      by the /bin/sh shebang in himmelblau-init-hsm-pin. Removing bash
+  #      from depends=() would resurrect warning #3; the two limitations
+  #      cancel each other. Allowlisting both is the documented Arch
+  #      packaging workaround for shebang-based dependencies.
+  #
+  # IMPORTANT: this allowlist does NOT cover the other "may not be needed"
+  # warnings (krb5/libcap/openssh/pcre2/systemd) — those are genuine
+  # over-declarations that need per-dep runtime testing of PAM/NSS/krb
+  # code paths before being silenced or removed. They stay actionable
+  # until that work lands.
+  NAMCAP_ALLOWLIST='(W: Dependency (libgcc|glibc|systemd-libs) detected and implicitly satisfied|W: Unused shared library .(/usr)?/lib(64)?/ld-linux-(x86-64|aarch64)\.so|W: Referenced library .sh. is an uninstalled dependency|W: Dependency included, but may not be needed \(.bash.\))'
   NAMCAP_ACTIONABLE="$(grep -E ' (W|E): ' namcap-pkg.log | grep -Ev "${NAMCAP_ALLOWLIST}" || true)"
   if [[ -n "${NAMCAP_ACTIONABLE}" ]]; then
     echo "!! namcap reported actionable warnings or errors on built package" >&2
