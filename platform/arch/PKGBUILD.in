@@ -114,6 +114,22 @@ build() {
   #    regardless of host or distro.
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
+
+  # Arch's makepkg.conf defaults inject aggressive CFLAGS / LDFLAGS /
+  # RUSTFLAGS (notably -D_FORTIFY_SOURCE=3, -Wl,-z,now, hardening shims, and
+  # an opinionated -C target-cpu) that break crates whose build.rs uses the
+  # cc crate to compile C/asm into static libs — symbols come out of cc's
+  # static lib but ld.lld can't resolve them in the final binary link.
+  # Symptoms: undefined refs to ring_core_* and aws_lc_*_ functions even
+  # though those crates' build.rs ran cleanly.
+  #
+  # We clear those env vars here so cargo uses each crate's intended build
+  # configuration. The .pkg.tar.zst still gets stripped + compressed per
+  # makepkg's *packaging* defaults — we're only neutralizing *build-time*
+  # flag injection. (Verified against upstream's own ubuntu CI which uses
+  # vanilla `cargo build` and links cleanly.)
+  unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS RUSTFLAGS
+
   cargo build --release --locked --features tpm \
     --workspace --exclude himmelblau-fuzz
 }
