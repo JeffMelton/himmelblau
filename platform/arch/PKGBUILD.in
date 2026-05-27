@@ -82,12 +82,23 @@ makedepends=(
   'python'
 )
 
+# podman is the runtime that himmelblaud-orchestrator uses to launch the
+# browser-flow authentication container. The container image itself is NOT
+# built by this package — Arch users who want browser-flow auth must build
+# it manually (see the post_install message in himmelblau.install for the
+# command). Upstream's Debian packaging runs the build automatically in
+# postinst; we intentionally do not, because podman builds in pacman hooks
+# are surprising on a rolling distro and AUR users tend to push back on
+# them. Tracking Debian-parity post_install behavior as a separate
+# follow-up if/when a user files an issue against the AUR package asking
+# for it.
 optdepends=(
   'chromium: Microsoft Entra SSO via the Chromium native-messaging host'
   'firefox: Microsoft Entra SSO via the Firefox native-messaging host'
   'microsoft-edge-stable-bin: Microsoft Entra SSO via the Edge native-messaging host (Chromium-based; consumes the Chrome managed-policy drop-in)'
   'krb5: Kerberos ticket utilities (kinit, klist, kdestroy) for inspecting Entra-issued TGTs from /etc/krb5.conf.d/'
   'openssh-server: server-side SSH integration via the etc/ssh/sshd_config.d/himmelblau.conf drop-in'
+  'podman: container runtime for the himmelblaud-orchestrator browser-flow authentication backend (container image must be built manually — see post_install message)'
 )
 
 # Virtual-package claims declared upstream across the workspace
@@ -103,6 +114,7 @@ provides=(
   'linux-entra-sso'
   'intune-portal'
   'microsoft-identity-broker'
+  'himmelblaud-orchestrator'
 )
 
 # The user's edited config survives upgrades; pacman writes the new version as .pacnew.
@@ -227,6 +239,36 @@ package() {
                                                   "${pkgdir}/usr/lib/tmpfiles.d/himmelblau-policies.conf"
   install -Dm644 src/nss/src/nss-himmelblau.tmpfiles.conf \
                                                   "${pkgdir}/usr/lib/tmpfiles.d/nss-himmelblau.conf"
+
+  # ── himmelblaud-orchestrator (Tier A) ─────────────────────────────────────
+  # The orchestrator crate (src/orchestrator/) was added upstream after the
+  # 3.1.5 release, so it's not present in the 3.1.5 source tarball;
+  # workspace will silently skip building it. Guard each install so the
+  # PKGBUILD works against any release tag: gracefully no-op against
+  # pre-orchestrator tags (3.1.5 and earlier) and pick up the binary,
+  # generated systemd unit, and tmpfiles drop-in automatically on any tag
+  # that includes the crate. Same conditional pattern build() uses for the
+  # post-3.1.5 gen_param_code.py / --gen-conf-example flag changes.
+  #
+  # All three artifacts travel together: when the crate is present in the
+  # source tree, scripts/gen_servicefiles.py emits the .service file and
+  # src/orchestrator/src/ ships the tmpfiles.conf. When the crate is
+  # absent, none of them exist. A single existence test on the binary is
+  # sufficient to gate all three.
+  #
+  # Container image is NOT built by this package — podman is in optdepends
+  # with the manual build instructions surfaced in himmelblau.install's
+  # post_install message (which itself only fires when the binary is
+  # actually present, so users on pre-orchestrator tags don't see
+  # instructions for a binary they don't have).
+  if [ -f target/release/himmelblaud-orchestrator ]; then
+    install -Dm755 target/release/himmelblaud-orchestrator \
+                                                  "${pkgdir}/usr/sbin/himmelblaud-orchestrator"
+    install -Dm644 platform/opensuse/himmelblaud-orchestrator.service \
+                                                  "${pkgdir}/usr/lib/systemd/system/himmelblaud-orchestrator.service"
+    install -Dm644 src/orchestrator/src/himmelblaud-orchestrator.tmpfiles.conf \
+                                                  "${pkgdir}/usr/lib/tmpfiles.d/himmelblaud-orchestrator.conf"
+  fi
 
   # ── Browser SSO native messaging hosts ───────────────────────────────────────
   install -Dm644 src/sso/src/firefox/linux_entra_sso.json \

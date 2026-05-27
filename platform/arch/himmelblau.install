@@ -46,6 +46,32 @@ Browser SSO (optional):
     /usr/share/doc/himmelblau/firefox-policies.json.example
   and merge it into your distribution/policies.json.
 EOF
+
+  # The orchestrator binary only ships on upstream tags that include the
+  # src/orchestrator/ crate (added post-3.1.5). Only surface its instructions
+  # when the binary is actually installed — otherwise we'd be pointing
+  # users at a daemon they don't have.
+  if [ -x /usr/sbin/himmelblaud-orchestrator ]; then
+    cat <<'EOF'
+Browser-flow authentication orchestrator (optional):
+  This package installs the himmelblaud-orchestrator daemon and its
+  systemd unit, but the daemon is not started by the default 'enable'
+  command above. The orchestrator runs a containerized browser to handle
+  authentication flows that the broker cannot complete on its own (e.g.
+  conditional-access prompts requiring user interaction).
+
+  To use it:
+    1. Install podman:        pacman -S podman
+    2. Build the container manually using upstream's Dockerfile at
+         src/orchestrator/container/Dockerfile
+       (the Arch package does NOT auto-build the container the way
+       upstream's Debian packaging does).
+    3. Enable the service:    systemctl enable --now himmelblaud-orchestrator.service
+
+  If you have a use case that needs Debian-parity auto-build behavior
+  on Arch, please file an issue against the AUR package.
+EOF
+  fi
 }
 
 post_upgrade() {
